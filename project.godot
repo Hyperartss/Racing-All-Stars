@@ -1,5 +1,10 @@
-; Retro Karting - Mario Kart x Sonic R mashup
 ; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
 
 config_version=5
 
@@ -27,7 +32,10 @@ window/size/viewport_height=360
 window/size/window_width_override=1280
 window/size/window_height_override=720
 window/stretch/mode="viewport"
-window/stretch/aspect="keep"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/retro_tools/plugin.cfg")
 
 [input]
 
@@ -75,15 +83,10 @@ look_back={
 
 [rendering]
 
+textures/canvas_textures/default_texture_filter=0
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
-textures/canvas_textures/default_texture_filter=0
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0
 textures/default_filters/anisotropic_filtering_level=0
 textures/default_filters/texture_mipmap_bias=-1.0
-anti_aliasing/quality/msaa_3d=0
-lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0
 environment/defaults/default_clear_color=Color(0.12, 0.16, 0.28, 1)
-
-[editor_plugins]
-
-enabled=PackedStringArray("res://addons/retro_tools/plugin.cfg")
