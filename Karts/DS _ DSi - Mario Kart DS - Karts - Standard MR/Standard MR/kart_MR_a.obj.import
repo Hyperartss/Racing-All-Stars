@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://c2w3lj0bikkj2"
+path="res://.godot/imported/kart_MR_a.obj-cbf3b09eaa0d5558f1aad671834e819f.mesh"
+
+[deps]
+
+files=["res://.godot/imported/kart_MR_a.obj-cbf3b09eaa0d5558f1aad671834e819f.mesh"]
+
+source_file="res://Karts/DS _ DSi - Mario Kart DS - Karts - Standard MR/Standard MR/kart_MR_a.obj"
+dest_files=["res://.godot/imported/kart_MR_a.obj-cbf3b09eaa0d5558f1aad671834e819f.mesh", "res://.godot/imported/kart_MR_a.obj-cbf3b09eaa0d5558f1aad671834e819f.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

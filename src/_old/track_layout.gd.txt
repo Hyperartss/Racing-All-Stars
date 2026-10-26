@@ -1,0 +1,148 @@
+class_name TrackLayout
+extends RefCounted
+## The authored "Retro Circuit": one closed loop that mixes sections of Mario
+## Raceway (start straight, sweepers, hairpin, chicane) with sections of Sonic R's
+## Resort Island (ramp jump, banked turn, vertical loop, half-pipe, high road).
+##
+## Shape of each section is taken from its source track; the connections are made
+## by placing the sections around a single ring and letting TrackPath join them with
+## one continuous Catmull-Rom spline, so there is no join that can seam.
+##
+##     N (-Z)
+##       4   5  <- chicane, ramp jump
+##    3          6
+##    2          7   <- banked turn, vertical loop
+##       1   8
+##     S (+Z)      9  <- start straight, half-pipe, high road
+
+const Surface := TrackPath.Surface
+const Wall := TrackPath.Wall
+
+## Vertical loop parameters.
+const LOOP_CENTER := Vector3(-84.0, 23.0, 8.0)
+const LOOP_RADIUS := 17.0
+const LOOP_X := -84.0          ## the loop circle lies in the Z/Y plane at this x
+
+
+static func build() -> Array:
+	var pts: Array = []
+
+	# --- 1. START / FINISH STRAIGHT  (Mario Raceway) -----------------------
+	# Flat, wide, barrier-lined straight carrying the checkered start line.
+	pts += [
+		_p(-58, 0, 64, 17.0, Wall.BARRIER),
+		_p(-34, 0, 65, 17.0, Wall.BARRIER),
+		_p(-8, 0, 65, 17.0, Wall.BARRIER),
+		_p(18, 0, 65, 16.0, Wall.BARRIER),
+		_p(42, 1, 64, 15.0, Wall.BARRIER),
+	]
+
+	# --- 2. LONG SWEEPERS  (Mario Raceway) ---------------------------------
+	# The wide flat oval bends from the real circuit, opened out for karts.
+	pts += [
+		_p(64, 3, 58, 15.0, Wall.BARRIER),
+		_p(82, 6, 47, 14.5, Wall.RAIL),
+		_p(93, 9, 32, 14.0, Wall.RAIL),
+		_p(99, 12, 15, 14.0, Wall.RAIL),
+	]
+
+	# --- 3. BANKED TURN  (Resort Island) -----------------------------------
+	# Resort Island's heavily banked sweep, stretched into a long right-hander.
+	pts += [
+		_p(100, 15, -4, 14.5, Wall.RAIL, 0.20, Surface.ISLAND),
+		_p(96, 17, -24, 14.5, Wall.RAIL, 0.26, Surface.ISLAND),
+		_p(87, 18, -41, 14.0, Wall.RAIL, 0.20, Surface.ISLAND),
+	]
+
+	# --- 4. HAIRPIN  (Mario Raceway) ---------------------------------------
+	# The tight corner off Raceway's main bend, kept tight enough to force a
+	# drift. Small radius is what makes it a hairpin rather than another sweeper.
+	pts += [
+		_p(79, 18, -54, 13.0, Wall.RAIL),
+		_p(67, 18, -62, 13.0, Wall.RAIL),
+		_p(55, 17, -62, 13.0, Wall.RAIL),
+		_p(45, 16, -56, 13.0, Wall.RAIL),
+		_p(39, 15, -47, 13.5, Wall.RAIL),
+	]
+
+	# --- 5. CHICANE  (Mario Raceway) ---------------------------------------
+	# Rapid left-right, borrowed from the S-bend on Raceway's back straight.
+	pts += [
+		_p(30, 15, -38, 14.0, Wall.RAIL),
+		_p(18, 14, -34, 13.5, Wall.RAIL),
+		_p(6, 13, -41, 13.5, Wall.RAIL),
+		_p(-6, 12, -39, 13.5, Wall.RAIL),
+		_p(-18, 11, -45, 13.5, Wall.RAIL),
+	]
+
+	# --- 6. RAMP JUMP  (Resort Island) -------------------------------------
+	# Resort Island's kicker, rescaled into a double-sided ramp with a landing
+	# that favours runners (they can clear the gap on foot as well as in a kart).
+	pts += [
+		_p(-34, 12, -47, 13.0, Wall.RAIL, 0.0, Surface.ISLAND),
+		_p(-48, 15, -46, 13.0, Wall.RAIL, 0.0, Surface.ISLAND),   # kicker crest
+		_p(-62, 12, -42, 13.0, Wall.RAIL, 0.0, Surface.ISLAND),
+		_p(-74, 10, -32, 13.0, Wall.RAIL, 0.0, Surface.ISLAND),
+		_p(-82, 8, -18, 13.0, Wall.RAIL, 0.0, Surface.ISLAND),     # run-up
+		_p(LOOP_X, 6, 4, 13.0, Wall.RAIL, 0.0, Surface.ISLAND),    # loop entry
+	]
+
+	# --- 7. BIG VERTICAL LOOP  (Resort Island) -----------------------------
+	# The signature Resort Island loop, reproduced as a true 360 deg vertical
+	# circle. Loop center drives TrackPath's RADIAL framing, so the road banks
+	# itself all the way over the top.
+	pts += _loop_points()
+
+	# --- 8. HALF-PIPE  (Resort Island) ------------------------------------
+	# Descending banked chute with concave walls. Long enough to wall-ride.
+	pts += [
+		_p(LOOP_X + 3, 5, 24, 13.0, Wall.PIPE, 0.10, Surface.ISLAND),
+		_p(LOOP_X + 9, 4, 40, 13.0, Wall.PIPE, 0.14, Surface.ISLAND),
+		_p(LOOP_X + 18, 3, 52, 13.5, Wall.PIPE, 0.12, Surface.ISLAND),
+	]
+
+	# --- 9. HIGH ROAD + DESCENT  (Resort Island) --------------------------
+	# Elevated run-away that drops back to the start straight.
+	pts += [
+		_p(-52, 3, 60, 15.0, Wall.BARRIER, 0.0, Surface.SAND),
+		_p(-62, 2, 63, 16.0, Wall.BARRIER, 0.0, Surface.SAND),
+	]
+
+	return pts
+
+
+## Full 360 degree vertical loop. Starts and ends at the bottom of the circle
+## heading +Z, so the road enters and leaves along the same tangent - exactly how
+## a loop-the-loop is driven.
+static func _loop_points() -> Array:
+	var out: Array = []
+	const STEPS := 10
+	for k in range(STEPS + 1):
+		var phi := deg_to_rad(-90.0 + 360.0 * float(k) / float(STEPS))
+		out.append({
+			"pos": Vector3(
+				LOOP_X,
+				LOOP_CENTER.y + sin(phi) * LOOP_RADIUS,
+				LOOP_CENTER.z + cos(phi) * LOOP_RADIUS
+			),
+			"width": 13.0,
+			"bank": 0.0,
+			"loop_center": LOOP_CENTER,
+			"surface": Surface.ISLAND,
+			"wall_l": Wall.RAIL,
+			"wall_r": Wall.RAIL,
+		})
+	return out
+
+
+static func _p(x: float, y: float, z: float, width: float, wall: int,
+		bank: float = 0.0, surface: int = Surface.ASPHALT) -> Dictionary:
+	return {
+		"pos": Vector3(x, y, z),
+		"width": width,
+		"bank": bank,
+		"loop_center": Vector3.ZERO,
+		"surface": surface,
+		"wall_l": wall,
+		"wall_r": wall,
+	}

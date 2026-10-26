@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://b71wih4edkmaa"
+path="res://.godot/imported/Mario Raceway.obj-5abec0fde88ec16405b11e464ffb60ab.mesh"
+
+[deps]
+
+files=["res://.godot/imported/Mario Raceway.obj-5abec0fde88ec16405b11e464ffb60ab.mesh"]
+
+source_file="res://Tracks/Mario Raceway/Mario Raceway.obj"
+dest_files=["res://.godot/imported/Mario Raceway.obj-5abec0fde88ec16405b11e464ffb60ab.mesh", "res://.godot/imported/Mario Raceway.obj-5abec0fde88ec16405b11e464ffb60ab.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false
