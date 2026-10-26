@@ -8,6 +8,7 @@ func _init() -> void:
 	get_root().add_child(env)
 	var t := Track.new()
 	get_root().add_child(t)
+	t.load_track()
 	var cam := Camera3D.new()
 	cam.far = 900.0
 	cam.fov = 70.0

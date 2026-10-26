@@ -1,0 +1,63 @@
+{
+	"id": "retro_circuit",
+	"name": "Retro Circuit",
+	"subtitle": "Mario Raceway x Resort Island",
+	"data": "res://assets/maps/retro_circuit/track.json",
+	"preview": "res://assets/maps/retro_circuit/preview.png",
+	"laps": 3,
+	"length": 1422,
+	"layout": {
+		"segments": [
+			{
+				"source": "mario_raceway",
+				"from": [
+					0.0,
+					85.0
+				],
+				"to": [
+					-20.0,
+					-62.0
+				],
+				"scenery": "all",
+				"offset": [
+					0,
+					0,
+					0
+				],
+				"yaw": 0
+			},
+			{
+				"source": "resort_island",
+				"groups": [
+					90,
+					195
+				],
+				"branches": "auto",
+				"scenery": "near",
+				"offset": [
+					46.0,
+					"auto",
+					18.0
+				],
+				"yaw": 0
+			}
+		],
+		"connectors": [
+			{
+				"loop": true
+			},
+			{
+				"loop": false
+			}
+		],
+		"start": {
+			"segment": 0,
+			"at": [
+				-122.0,
+				-62.0
+			]
+		},
+		"checkpoints": 10,
+		"ground": true
+	}
+}

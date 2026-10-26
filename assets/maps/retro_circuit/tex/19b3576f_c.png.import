@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cxhiirplhqamh"
-path="res://.godot/imported/PLAYER00.png-d77e9c46f258f2f48b898e2ab6cbccb3.ctex"
+uid="uid://chn4hy8xcn1fu"
+path="res://.godot/imported/19b3576f_c.png-58ffc6779418a22828522989e2cc73c4.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/characters/sonic/PLAYER00.png"
-dest_files=["res://.godot/imported/PLAYER00.png-d77e9c46f258f2f48b898e2ab6cbccb3.ctex"]
+source_file="res://assets/maps/retro_circuit/tex/19b3576f_c.png"
+dest_files=["res://.godot/imported/19b3576f_c.png-58ffc6779418a22828522989e2cc73c4.ctex"]
 
 [params]
 

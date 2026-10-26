@@ -93,3 +93,18 @@ Tunables (cut points, island offset, loop radius, scales) are constants at the t
 * The previous session's `assets/characters`, `assets/karts`, `assets/tracks/mario_raceway`
   and `assets/tracks/resort_island` copies are no longer used (`.gdignore` added). The old
   procedural track code is kept in `src/_old/`.
+
+## Menu, customisation and editor tools
+
+- **Main menu** (`scenes/main_menu.tscn`, now the start scene): pick a character, paint it (and its kart), pick a map, laps and opponents. Choices are saved in `user://profile.json`.
+- **Content is data:** `content/characters`, `content/karts`, `content/maps`, `content/track_sources` (JSON). The menu lists whatever is in those folders.
+- **Editor plugin "Retro Karting Tools"** (enabled in Project Settings → Plugins) adds two bottom-panel docks:
+  - **Map Combiner:** choose segments from the source tracks (whole loop, cut section, or piece range). Place them by dragging, Shift-drag to rotate, wheel to zoom and right-drag to pan. "Pick" buttons set cut points and the start. Each connector can have a vertical loop. **Bake** runs `tools/bake/trackbake.py` (needs Python 3 with numpy, pillow, opencv-python, scikit-image, networkx and matplotlib; set the Python path in the dock). It writes `assets/maps/<id>/`.
+  - **Character Importer:** put a model inside the project (e.g. `res://import/<name>/`) and enter its path. Set the type (runner or kart driver), which way it faces, the height and the split mode:
+    - `auto`: biped split from the silhouette.
+    - `nodes`: one part per mesh node, using the node origins as pivots.
+    - `surfaces`: one part per surface.
+    
+    Then set roles per group and Export. This writes `assets/rigs/<id>.json`, its textures and `content/characters/<id>.json` with auto-detected paint zones. Test it: `godot --headless -s tools/test_importer.gd`.
+- Demo imports: `mario_runner` (Mario OBJ, auto split, as a runner) and `sonic_kart` (Sonic DAE, node split, as a kart driver). Both finish a lap: `res://scenes/test_lap.tscn -- --roster=mario_runner,sonic_kart`.
+- `tools/bake/bake_track.py` and `assets/tracks/merged` are superseded by `trackbake.py` and `assets/maps/`.

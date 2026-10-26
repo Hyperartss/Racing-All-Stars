@@ -1,0 +1,13 @@
+{
+	"id": "standard",
+	"name": "Standard Kart",
+	"rig": "res://assets/rigs/kart_standard.json",
+	"seat": [0.0, 0.05, 0.16],
+	"paint": {
+		"body": {"label": "Body", "mode": "swap", "surface": "kart_body", "src": "#c00000", "tol": 0.05, "default": "#c00000",
+			"presets": ["#c00000", "#2050e0", "#20b040", "#e0c020", "#f0f0f0", "#202020", "#e060c0"]},
+		"wheels": {"label": "Wheels", "mode": "tint", "surface": "kart_tire", "default": "#ffffff",
+			"presets": ["#ffffff", "#ff9090", "#90b0ff", "#a0ffa0", "#ffe080", "#606060"]},
+		"emblem": {"label": "Emblem", "mode": "toggle", "surface": "kart_emblem", "default": true}
+	}
+}

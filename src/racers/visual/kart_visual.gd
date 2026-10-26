@@ -13,7 +13,7 @@ extends RacerVisual
 @export var driver_rig_path := "res://assets/rigs/mario.json"
 ## Where the driver's hips sit, in kart space (rest pose).
 @export var seat := Vector3(0.0, 0.05, 0.16)
-@export var driver_scale := 1.0
+@export var driver_scale := 0.0   ## 0 = automatic (0.85 m tall)
 
 var kart: VertexRig
 var driver: VertexRig
@@ -25,6 +25,7 @@ var head_yaw := 0.0
 var hop := 0.0
 var _was_drift := 0
 var wheels := {}   ## name -> radius
+var _arm_rest := 0.0
 
 
 func _ready() -> void:
@@ -33,11 +34,18 @@ func _ready() -> void:
 	add_child(kart)
 	kart.load_rig(kart_rig_path)
 	for w in ["wheel_fl", "wheel_fr", "wheel_bl", "wheel_br"]:
-		wheels[w] = float(kart.meta.get(w, {}).get("radius", 0.15))
+		if kart.has_part(w):
+			wheels[w] = float(kart.meta.get(w, {}).get("radius", 0.15))
 	driver = VertexRig.new()
 	driver.name = "DriverRig"
 	add_child(driver)
 	driver.load_rig(driver_rig_path)
+	# Arms modelled hanging down: lift them to the T-pose the seated pose starts from.
+	_arm_rest = -PI * 0.5 if driver.rest_pose() == "arms_down" else 0.0
+	# Any driver is scaled to sit like a 0.85 m tall racer.
+	var h := float(driver.meta.get("aabb_max", [0, 0.85, 0])[1]) - float(driver.meta.get("aabb_min", [0, 0, 0])[1])
+	if driver_scale <= 0.0:
+		driver_scale = 0.85 / maxf(h, 0.05)
 
 
 func update_visual(s: AnimState, delta: float) -> void:
@@ -103,7 +111,7 @@ func _pose_driver(s: AnimState, k: float) -> void:
 	driver.set_rot(&"leg_lower_r", Vector3(-1.0, 0, 0))
 	# Arms: down from the T-pose and forward to the wheel; turning the wheel raises
 	# one hand and lowers the other.
-	driver.set_rot(&"arm_upper_l", Vector3(0, -1.05, 0.95 - st * 0.30 + hit * -1.5))
-	driver.set_rot(&"arm_upper_r", Vector3(0, 1.05, -0.95 - st * 0.30 + hit * 1.5))
+	driver.set_rot(&"arm_upper_l", Vector3(0, -1.05, 0.95 - st * 0.30 + hit * -1.5 + _arm_rest))
+	driver.set_rot(&"arm_upper_r", Vector3(0, 1.05, -0.95 - st * 0.30 + hit * 1.5 - _arm_rest))
 	driver.set_rot(&"arm_lower_l", Vector3(0, -0.7, 0))
 	driver.set_rot(&"arm_lower_r", Vector3(0, 0.7, 0))

@@ -1,3 +1,4 @@
+@tool
 class_name VertexRig
 extends MeshInstance3D
 ## Vertex animation without skeletons.
@@ -12,7 +13,18 @@ extends MeshInstance3D
 ## Vertices on a seam between two parts carry a second part and a 50/50 blend so
 ## elbows and knees do not crack open when bent.
 
-const SHADING := BaseMaterial3D.SHADING_MODE_PER_VERTEX
+const PAINT_SHADER := preload("res://src/rig/rig_paint.gdshader")
+## Alternative part names, so any rig can drive any animator (e.g. a runner rig
+## with "foot_l" or a driver rig with "hips"/"torso" instead of "body").
+const ALIASES := {
+	"body": ["hips", "torso", "pelvis", "chest"],
+	"hips": ["body", "pelvis"],
+	"torso": ["chest", "spine"],
+	"leg_lower_l": ["foot_l", "shin_l"],
+	"leg_lower_r": ["foot_r", "shin_r"],
+	"foot_l": ["leg_lower_l", "shin_l"],
+	"foot_r": ["leg_lower_r", "shin_r"],
+}
 
 @export_file("*.json") var rig_path := ""
 
@@ -66,32 +78,97 @@ func load_rig(path: String) -> void:
 			"w": PackedFloat32Array(s.w),
 			"pos": pos.duplicate(), "nrm": nrm.duplicate(),
 			"mat": _make_material(s.texture, s.alpha, s.cull),
+			"tex": s.texture, "hidden": false,
 		})
 	mesh = _mesh
 	_loaded = true
 	apply()
 
 
-func _make_material(tex_path: String, alpha: String, cull: bool) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
+func _make_material(tex_path: String, alpha: String, _cull: bool) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = PAINT_SHADER
 	if ResourceLoader.exists(tex_path):
-		m.albedo_texture = load(tex_path)
-	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-	m.shading_mode = SHADING
-	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
-	m.roughness = 1.0
-	if alpha == "scissor":
-		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-		m.alpha_scissor_threshold = 0.5
-	if not cull:
-		m.cull_mode = BaseMaterial3D.CULL_DISABLED
+		m.set_shader_parameter("tex", load(tex_path))
+	m.set_shader_parameter("use_alpha", alpha == "scissor")
 	return m
+
+
+# --- Paint (colour customisation) -------------------------------------------------
+
+## Recolour pixels near `src` to `dst` on surfaces whose texture path contains
+## `surface_filter` ("" = every surface). Keeps the original shading.
+func paint_swap(surface_filter: String, src: Color, dst: Color, tol: float = 0.07) -> void:
+	for s in _surf:
+		if surface_filter == "" or String(s.tex).contains(surface_filter):
+			var swaps: Array = s.get("swaps", [])
+			if swaps.size() >= 4:
+				continue
+			swaps.append([Vector3(src.h, src.s, src.v), Vector3(dst.h, dst.s, dst.v), tol])
+			s.swaps = swaps
+			var m: ShaderMaterial = s.mat
+			var a := PackedVector3Array(); var b := PackedVector3Array(); var t := PackedFloat32Array()
+			for w in swaps:
+				a.append(w[0]); b.append(w[1]); t.append(w[2])
+			for k in range(swaps.size(), 4):
+				a.append(Vector3.ZERO); b.append(Vector3.ZERO); t.append(0.0)
+			m.set_shader_parameter("src_hsv", a)
+			m.set_shader_parameter("dst_hsv", b)
+			m.set_shader_parameter("hue_tol", t)
+			m.set_shader_parameter("swap_count", swaps.size())
+
+
+## Remove all colour swaps (back to the original texture colours).
+func paint_reset() -> void:
+	for s in _surf:
+		s.swaps = []
+		(s.mat as ShaderMaterial).set_shader_parameter("swap_count", 0)
+		(s.mat as ShaderMaterial).set_shader_parameter("tint", Color.WHITE)
+		s.hidden = false
+
+
+## Multiply the colour of matching surfaces.
+func paint_tint(surface_filter: String, c: Color) -> void:
+	for s in _surf:
+		if surface_filter == "" or String(s.tex).contains(surface_filter):
+			(s.mat as ShaderMaterial).set_shader_parameter("tint", c)
+
+
+## Show or hide matching surfaces (e.g. the kart emblem).
+func set_surface_visible(surface_filter: String, on: bool) -> void:
+	for s in _surf:
+		if String(s.tex).contains(surface_filter):
+			s.hidden = not on
+	apply()
+
+
+## "t_pose" (arms out sideways) or "arms_down", from the file or measured.
+func rest_pose() -> String:
+	if meta.has("rest_pose"):
+		return String(meta.rest_pose)
+	var a := _find("arm_upper_l")
+	var b := _find("arm_lower_l")
+	if a < 0 or b < 0:
+		return "arms_down"
+	var d := part_pivot[b] - part_pivot[a]
+	return "t_pose" if absf(d.x) > absf(d.y) else "arms_down"
 
 
 # --- Pose API ------------------------------------------------------------------
 
 func has_part(name: StringName) -> bool:
-	return part_index.has(name)
+	return _find(name) >= 0
+
+
+func _find(name: StringName) -> int:
+	var i: int = part_index.get(name, -1)
+	if i >= 0:
+		return i
+	for alt in ALIASES.get(String(name), []):
+		i = part_index.get(alt, -1)
+		if i >= 0:
+			return i
+	return -1
 
 
 func reset_pose() -> void:
@@ -102,31 +179,31 @@ func reset_pose() -> void:
 
 ## Rotation in radians, applied about the part's pivot. Euler order YXZ.
 func set_rot(name: StringName, euler: Vector3) -> void:
-	var i: int = part_index.get(name, -1)
+	var i := _find(name)
 	if i >= 0:
 		part_rot[i] = Basis.from_euler(euler)
 
 
 func set_part_basis(name: StringName, b: Basis) -> void:
-	var i: int = part_index.get(name, -1)
+	var i := _find(name)
 	if i >= 0:
 		part_rot[i] = b
 
 
 func set_offset(name: StringName, off: Vector3) -> void:
-	var i: int = part_index.get(name, -1)
+	var i := _find(name)
 	if i >= 0:
 		part_offset[i] = off
 
 
 func pivot_of(name: StringName) -> Vector3:
-	var i: int = part_index.get(name, -1)
+	var i := _find(name)
 	return part_pivot[i] if i >= 0 else Vector3.ZERO
 
 
 ## Current rig-space position of a point that is attached to a part in rest pose.
 func point_on(name: StringName, rest_point: Vector3) -> Vector3:
-	var i: int = part_index.get(name, -1)
+	var i := _find(name)
 	return part_xform[i] * rest_point if i >= 0 else rest_point
 
 
@@ -151,6 +228,8 @@ func apply() -> void:
 	_mesh.clear_surfaces()
 	for si in _surf.size():
 		var s: Dictionary = _surf[si]
+		if s.hidden:
+			continue
 		var rp: PackedVector3Array = s.rest_pos
 		var rn: PackedVector3Array = s.rest_nrm
 		var pa: PackedInt32Array = s.pa
@@ -177,7 +256,7 @@ func apply() -> void:
 		arrays[Mesh.ARRAY_TEX_UV] = s.uv
 		arrays[Mesh.ARRAY_INDEX] = s.idx
 		_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		_mesh.surface_set_material(si, s.mat)
+		_mesh.surface_set_material(_mesh.get_surface_count() - 1, s.mat)
 
 
 ## Debug/verification: how far vertices currently are from rest (max distance).

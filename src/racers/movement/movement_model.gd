@@ -87,7 +87,35 @@ func move_body(planar_velocity: Vector3, vertical: float, delta: float) -> float
 		var nrm := c.get_normal()
 		if absf(nrm.y) < 0.5:   # a wall, not a floor
 			impact = maxf(impact, -before.normalized().dot(nrm))
+	if impact > 0.3 and body.is_on_floor():
+		if _try_step_up(planar_velocity, delta):
+			impact = 0.0
 	return impact
+
+
+## Arcade step-up: climb lips and kerbs up to STEP_HEIGHT that the body walked into
+## (old tracks have plenty of small ledges with no ramp).
+const STEP_HEIGHT := 1.1
+
+func _try_step_up(planar_velocity: Vector3, delta: float) -> bool:
+	var body := racer
+	var fwd := Vector3(planar_velocity.x, 0, planar_velocity.z)
+	if fwd.length() < 1.0:
+		return false
+	var step := fwd.normalized() * maxf(fwd.length() * delta, 0.25)
+	var up := Vector3.UP * STEP_HEIGHT
+	var t := body.global_transform
+	if body.test_move(t, up):
+		return false                      # no headroom
+	var raised := t.translated(up)
+	if body.test_move(raised, step):
+		return false                      # still blocked higher up: a real wall
+	var over := raised.translated(step)
+	var col := KinematicCollision3D.new()
+	if body.test_move(over, Vector3.DOWN * (STEP_HEIGHT + 0.2), col) and col.get_normal().y > 0.6:
+		body.global_position = over.origin + col.get_travel()
+		return true
+	return false
 
 
 ## Floor surface class ("road", "off", "wall") from the collider metadata.

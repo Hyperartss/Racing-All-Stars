@@ -10,6 +10,10 @@ extends Node3D
 @export var player_index := 0
 @export var laps := 3
 @export var countdown := true
+@export var map_id := "retro_circuit"
+## Per-roster-slot customisation (same order as roster).
+var customs: Array = []
+var return_to_menu := false
 
 var track: Track
 var racers: Array[Racer] = []
@@ -22,16 +26,19 @@ var results: Array = []
 
 func _ready() -> void:
 	_read_args()
+	_apply_config(GameState.race_config)
 	GameState.reset()
 	GameState.total_laps = laps
 	add_child(RetroEnv.new())
 	track = Track.new()
 	track.name = "Track"
 	add_child(track)
-	track.load_track()
+	var map_def: Dictionary = RacerTypes.maps().get(map_id, {})
+	track.load_track(String(map_def.get("data", Track.DEFAULT_DATA)))
 	for k in roster.size():
 		var ctrl: RacerController = PlayerController.new() if k == player_index else AIController.new(k + 1)
-		var r := Racer.create(roster[k], track, ctrl)
+		var custom: Dictionary = customs[k] if k < customs.size() else {}
+		var r := Racer.create(roster[k], track, ctrl, custom)
 		r.total_laps = laps
 		add_child(r)
 		r.place(track.grid_transform(k))
@@ -52,6 +59,26 @@ func _ready() -> void:
 		_go()
 
 
+## Race set up by the main menu (player first, then opponents).
+func _apply_config(cfg: Dictionary) -> void:
+	if cfg.is_empty():
+		return
+	map_id = String(cfg.get("map", map_id))
+	laps = int(cfg.get("laps", laps))
+	var p: Dictionary = cfg.get("player", {})
+	roster = PackedStringArray([String(p.get("character", "sonic"))])
+	customs = [p.get("custom", {})]
+	for o in cfg.get("opponents", []):
+		if o is Dictionary:
+			roster.append(String(o.get("character", "sonic")))
+			customs.append(o.get("custom", {}))
+		else:
+			roster.append(String(o))
+			customs.append({})
+	player_index = 0
+	return_to_menu = bool(cfg.get("return_to_menu", false))
+
+
 func _read_args() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--roster="):
@@ -60,6 +87,8 @@ func _read_args() -> void:
 			player_index = int(a.trim_prefix("--player="))
 		elif a.begins_with("--laps="):
 			laps = int(a.trim_prefix("--laps="))
+		elif a.begins_with("--map="):
+			map_id = a.trim_prefix("--map=")
 		elif a == "--no-countdown":
 			countdown = false
 
@@ -87,6 +116,8 @@ func _unhandled_input(e: InputEvent) -> void:
 		camera.target = racers[_cam_i]
 	if e is InputEventKey and e.pressed and e.keycode == KEY_R and player_index >= 0:
 		racers[player_index].respawn()
+	if e is InputEventKey and e.pressed and e.keycode == KEY_ESCAPE:
+		get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
 
 
 func _on_lap(r: Racer, lap: int, t: float) -> void:
@@ -98,5 +129,7 @@ func _on_finished(r: Racer, t: float) -> void:
 	results.append({"name": r.display_name, "time": t})
 	if r == camera.target:
 		EventBus.hud_message.emit("FINISH!  %s" % RaceHUD._fmt(t), 4.0)
-	if results.size() == racers.size():
+	if results.size() == racers.size() or (player_index >= 0 and r == racers[player_index]):
 		GameState.set_state(GameState.RaceState.FINISHED)
+		if return_to_menu:
+			EventBus.hud_message.emit("FINISH!  %s   [Esc] menu" % RaceHUD._fmt(t), 30.0)

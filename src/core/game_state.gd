@@ -10,6 +10,10 @@ enum RaceState { IDLE, COUNTDOWN, RACING, FINISHED }
 var race_state: int = RaceState.IDLE
 var total_laps := 3
 var racers: Array[Node] = []
+## Set by the main menu before loading the race scene:
+## {"map": id, "laps": int, "player": {"character": id, "custom": {...}},
+##  "opponents": [char ids], "return_to_menu": bool}
+var race_config := {}
 
 
 func register_racer(r: Node) -> void:

@@ -1,5 +1,5 @@
 extends Node3D
-## Boot: straight into a race (Sonic = player, Mario = AI).
+## Boot: opens the main menu.
 
 func _ready() -> void:
-	get_tree().change_scene_to_file.call_deferred("res://scenes/race.tscn")
+	get_tree().change_scene_to_file.call_deferred("res://scenes/main_menu.tscn")

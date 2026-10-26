@@ -35,6 +35,10 @@ var _off_timer := 0.0
 var _stall_time := 0.0
 var _loc := {}
 var _under_time := 0.0
+var _cp_seen := -1
+var _cp_time := 0.0
+var _last_respawn_dist := -1000.0
+var _repeat_respawns := 0
 var _stall_dist := -1.0
 
 # --- loop riding ---
@@ -47,16 +51,16 @@ var _rail_cool := 0.0
 var _tilt := Basis.IDENTITY
 
 
-static func create(char_id: String, trk: Track, ctrl: RacerController) -> Racer:
+static func create(char_id: String, trk: Track, ctrl: RacerController, custom: Dictionary = {}) -> Racer:
 	var r := Racer.new()
 	r.character = char_id
-	var c: Dictionary = RacerTypes.CHARACTERS[char_id]
-	r.display_name = c.name
-	r.colour = c.colour
+	var c := RacerTypes.character(char_id)
+	r.display_name = String(c.get("name", char_id))
+	r.colour = Color.html(String(c.get("colour", "#ffffff")))
 	r.track = trk
 	r.controller = ctrl
 	r.movement = RacerTypes.make_movement(char_id)
-	r.visual = RacerTypes.make_visual(char_id)
+	r.visual = RacerTypes.make_visual(char_id, custom)
 	return r
 
 
@@ -231,7 +235,7 @@ func progress_key() -> float:
 func _check_respawn(delta: float) -> void:
 	var ref := track.path.pos[track_index]
 	if _loc.get("on_fork", false):
-		ref = track.fork.pos[int(_loc.fork_index)]
+		ref = track.fork_path(int(_loc.fork)).pos[int(_loc.fork_index)]
 	var loc_far := global_position.distance_to(ref) > 45.0
 	if loc_far:
 		_off_timer += delta
@@ -244,14 +248,23 @@ func _check_respawn(delta: float) -> void:
 				_stall_dist = distance
 				_stall_time = 0.0
 		_stall_time += delta
-	# Dropped under the course (e.g. off an edge onto the ground layer)?
-	var below := track.path.pos[track_index].y - global_position.y
-	if not on_rail and not _loc.get("on_fork", false) and below > 3.5:
+	# Dropped under the course (e.g. off an edge onto the ground below)?
+	var below := ref.y - global_position.y
+	if not on_rail and below > 3.5:
 		_under_time += delta
 	else:
 		_under_time = 0.0
+	# Last resort: no checkpoint for a long time (lost somewhere the other checks miss).
+	if race_active and not has_finished:
+		if next_cp != _cp_seen:
+			_cp_seen = next_cp
+			_cp_time = 0.0
+		_cp_time += delta
 	var why := ""
-	if _under_time > 1.0:
+	if _cp_time > 25.0:
+		why = "lost"
+		_cp_time = 0.0
+	elif _under_time > 1.0:
 		why = "under course"
 		_under_time = 0.0
 	elif global_position.y < track.kill_y:
@@ -270,6 +283,13 @@ func _check_respawn(delta: float) -> void:
 func respawn() -> void:
 	respawns += 1
 	var i := track.path.wi(_last_good_index - 3)
+	# Repeated trouble at the same place: put the racer a little further on each time.
+	if absf(track.path.dist[i] - _last_respawn_dist) < 30.0:
+		_repeat_respawns += 1
+		i = track.path.wi(i + 6 * _repeat_respawns)
+	else:
+		_repeat_respawns = 0
+	_last_respawn_dist = track.path.dist[track.path.wi(_last_good_index - 3)]
 	place(track.respawn_transform(i))
 	_off_timer = 0.0
 

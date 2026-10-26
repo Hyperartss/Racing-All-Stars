@@ -1,0 +1,59 @@
+{
+	"colour": "#a2223c",
+	"id": "mario_runner",
+	"name": "Mario (Runner)",
+	"paint": {
+		"blue": {
+			"default": "#2d5aa6",
+			"label": "Blue",
+			"presets": [
+				"#2d5aa6",
+				"#e02020",
+				"#20b040",
+				"#f0d020",
+				"#f08020",
+				"#c040ff"
+			],
+			"src": "#2d5aa6",
+			"surface": "",
+			"tol": 0.06
+		},
+		"dark orange": {
+			"default": "#6e4130",
+			"label": "Dark orange",
+			"presets": [
+				"#6e4130",
+				"#2050ff",
+				"#20b040",
+				"#f0d020",
+				"#c040ff",
+				"#f0f0f0"
+			],
+			"src": "#6e4130",
+			"surface": "",
+			"tol": 0.0716666666666667
+		},
+		"red": {
+			"default": "#a2223c",
+			"label": "Red",
+			"presets": [
+				"#a2223c",
+				"#e02020",
+				"#2050ff",
+				"#20b040",
+				"#f0d020",
+				"#f08020"
+			],
+			"src": "#a2223c",
+			"surface": "",
+			"tol": 0.06
+		}
+	},
+	"rig": "res://assets/rigs/mario_runner.json",
+	"stats": {
+		"accel": 4,
+		"handling": 4,
+		"speed": 4
+	},
+	"type": "runner"
+}

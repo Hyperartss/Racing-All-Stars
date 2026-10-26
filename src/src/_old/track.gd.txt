@@ -1,0 +1,186 @@
+class_name Track
+extends Node3D
+## A complete race track: generated geometry, collision, checkpoints, and the
+## spatial queries the racers use to know "where am I on the track".
+
+signal lap_crossed(racer: Node, lap: int)
+signal checkpoint_passed(racer: Node, index: int)
+
+const START_FLAG := 1
+const GATE_FLAG := 2
+
+## Materials, resolved once. Texture choice per surface band comes from the
+## source tracks: Raceway's grey asphalt / tan sand / checkered flag, and Resort
+## Island's tropical road.
+const TEX := {
+	TrackPath.Surface.ASPHALT: "res://assets/tracks/mario_raceway/7EEA0D6A_c.png",
+	TrackPath.Surface.SAND: "res://assets/tracks/mario_raceway/73879E4_c.png",
+	TrackPath.Surface.ISLAND: "res://assets/tracks/resort_island/island00.png",
+	TrackPath.Surface.CHECKER: "res://assets/tracks/mario_raceway/92276F6_c.png",
+}
+const WALL_TEX := "res://assets/tracks/mario_raceway/7BB9F917_ctran.png"
+const SKIRT_TEX := "res://assets/tracks/mario_raceway/3A0A5AFD_c.png"
+const CHECKPOINT_COUNT := 8
+
+var path: TrackPath
+var road_tris := PackedVector3Array()
+var wall_tris := PackedVector3Array()
+var gates: Array[Node3D] = []
+var _built := false
+
+
+func build(points: Array) -> void:
+	path = TrackPath.new()
+	path.build(points)
+
+	var geo := TrackBuilder.build(path)
+	road_tris = geo.road_tris
+	wall_tris = geo.wall_tris
+
+	# --- Road: one MeshInstance per surface band --------------------------
+	for surf in geo.roads:
+		var mi := MeshInstance3D.new()
+		mi.name = "Road%d" % int(surf)
+		mi.mesh = geo.roads[surf]
+		mi.material_override = _surface_material(surf)
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+
+	# --- Walls ------------------------------------------------------------
+	var walls := MeshInstance3D.new()
+	walls.name = "Walls"
+	walls.mesh = geo.walls
+	walls.material_override = _wall_material()
+	add_child(walls)
+
+	# --- Start / finish stripe -------------------------------------------
+	var line := MeshInstance3D.new()
+	line.name = "StartLine"
+	line.mesh = _build_start_line()
+	line.material_override = _surface_material(TrackPath.Surface.CHECKER)
+	line.position.y = 0.06
+	add_child(line)
+
+	_build_collision()
+	_build_gates()
+	_built = true
+
+
+# --- Geometry helpers ------------------------------------------------------
+
+func _surface_material(surf: int) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	var tex_path: String = TEX.get(surf, TEX[TrackPath.Surface.ASPHALT])
+	if ResourceLoader.exists(tex_path):
+		var t: Texture2D = load(tex_path)
+		m.albedo_texture = t
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	m.roughness = 1.0
+	m.metallic = 0.0
+	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	m.uv1_scale = Vector3(1, 1, 1)
+	return m
+
+
+func _wall_material() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	if ResourceLoader.exists(WALL_TEX):
+		m.albedo_texture = load(WALL_TEX)
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	m.roughness = 1.0
+	m.metallic = 0.0
+	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	m.albedo_color = Color(0.85, 0.85, 0.9)
+	return m
+
+
+func _build_start_line() -> ArrayMesh:
+	var s := path.sample_at_distance(0.0)
+	var w := s.width
+	var f := s.tangent * 1.6
+	var verts := PackedVector3Array([
+		s.pos - s.right * w * 0.5 + s.up * 0.05 - f * 0.5,
+		s.pos + s.right * w * 0.5 + s.up * 0.05 - f * 0.5,
+		s.pos + s.right * w * 0.5 + s.up * 0.05 + f * 0.5,
+		s.pos - s.right * w * 0.5 + s.up * 0.05 + f * 0.5,
+	])
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, [verts])
+	return m
+
+
+func _build_collision() -> void:
+	var body := StaticBody3D.new()
+	body.name = "Collision"
+	body.collision_layer = 1
+	body.collision_mask = 0
+
+	var road_shape := ConcavePolygonShape3D.new()
+	road_shape.set_faces(road_tris)
+	var road_col := CollisionShape3D.new()
+	road_col.shape = road_shape
+	body.add_child(road_col)
+
+	var wall_shape := ConcavePolygonShape3D.new()
+	wall_shape.set_faces(wall_tris)
+	var wall_col := CollisionShape3D.new()
+	wall_col.shape = wall_shape
+	body.add_child(wall_col)
+
+	add_child(body)
+
+
+func _build_gates() -> void:
+	gates.clear()
+	var step := path.length / float(CHECKPOINT_COUNT)
+	for i in CHECKPOINT_COUNT:
+		var d := fposmod(step * i, path.length)
+		var s := path.sample_at_distance(d)
+		var g := Marker3D.new()
+		g.name = "Gate%d" % i
+		g.position = s.pos + s.up * 0.1
+		# Face along the direction of travel; +Z of the gate points forward.
+		var b := Basis.looking_at(s.tangent, s.up)
+		g.basis = b
+		g.set_meta("index", i)
+		g.set_meta("distance", d)
+		add_child(g)
+		gates.append(g)
+
+
+# --- Queries used by racers ------------------------------------------------
+
+## Fills `out` with { sample, index, lateral, on_road, surface, height } for a
+## world position. Allocation-free variant for per-frame use.
+func query(p: Vector3) -> Dictionary:
+	var idx := path.nearest_index(p)
+	var s := path.sample_at_index(idx)
+	var lat := (p - s.pos).dot(s.right)
+	var half := s.width * 0.5
+	return {
+		"index": idx,
+		"sample": s,
+		"lateral": lat,
+		"on_road": absf(lat) <= half,
+		"half_width": half,
+		"surface": s.surface,
+		"distance": s.dist,
+		"height": s.pos.y,
+	}
+
+
+## Ground height directly under `p`, using the road frame (so this stays correct
+## upside-down inside the loop).
+func surface_height(p: Vector3) -> float:
+	var s := path.sample_at_index(path.nearest_index(p))
+	return s.pos.y
+
+
+## Start line transform, used to place the grid.
+func start_transform() -> Transform3D:
+	var s := path.sample_at_distance(0.0)
+	return Transform3D(Basis.looking_at(s.tangent, s.up), s.pos)
+
+
+func debug_string() -> String:
+	return "Track '%s': %d samples, %.0f m, %d gates" % [name, path.samples.size(), path.length, gates.size()]

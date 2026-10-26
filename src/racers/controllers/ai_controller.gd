@@ -12,7 +12,7 @@ var _drift_hold := 0.0
 var _rng := RandomNumberGenerator.new()
 var _jump_timer := 3.0
 var _fork_choice := false     ## take the alternate route this lap?
-var _on_fork := false
+var _fork_k := -1            ## alternate route being followed (-1 = main)
 var _fork_i := 0
 var _last_lap := -1
 
@@ -29,21 +29,30 @@ func get_input(racer: Node, delta: float) -> RacerInput:
 	var i: int = racer.track_index
 	var spd := absf(mv.speed)
 	var path := track.path
-	var look := clampf(6.0 + spd * 0.55, 8.0, 22.0)
+	# Look less far ahead on narrow roads so corners are not cut into the scenery.
+	var look := clampf(6.0 + spd * 0.55, 8.0, 22.0) * clampf(path.width[i] / 10.0, 0.45, 1.0)
 	var j := path.index_ahead(i, look)
 	# Alternate route: decide once per lap, then follow its own line.
 	if racer.laps_done != _last_lap:
 		_last_lap = racer.laps_done
 		_fork_choice = _rng.randf() < 0.5
-	if not _on_fork and _fork_choice and i >= track.fork_from - 6 and i <= track.fork_from:
-		_on_fork = true
-		_fork_i = 0
-	var target := path.pos[j] + path.right[j] * lane
-	if _on_fork:
-		var fk := track.fork
+	if _fork_k < 0 and _fork_choice:
+		for k in track.forks.size():
+			var f: Dictionary = track.forks[k]
+			# Raised alternate routes are runner shortcuts; AI karts keep to the main road.
+			var kart_ok := not (mv is KartMovement) or bool(f.get("karts", false))
+			if f.ai and kart_ok and i >= int(f.from) - 6 and i <= int(f.from):
+				_fork_k = k
+				_fork_i = 0
+				break
+	# Keep the preferred lane inside the road (island roads can be ~5 m wide).
+	var lane_max := maxf(0.0, path.width[j] * 0.5 - 1.8)
+	var target := path.pos[j] + path.right[j] * clampf(lane, -lane_max, lane_max)
+	if _fork_k >= 0:
+		var fk := track.fork_path(_fork_k)
 		_fork_i = fk.nearest(racer.global_position, _fork_i, 12)
-		if _fork_i >= fk.size() - 3 or i > track.fork_to + 4:
-			_on_fork = false
+		if _fork_i >= fk.size() - 3 or i > int(track.forks[_fork_k].to) + 4:
+			_fork_k = -1
 		else:
 			target = fk.pos[fk.wi(_fork_i + int(look / 2.0))]
 	var to: Vector3 = target - (racer as Node3D).global_position
@@ -51,6 +60,13 @@ func get_input(racer: Node, delta: float) -> RacerInput:
 	var fwd := mv.forward()
 	var ang := fwd.signed_angle_to(to.normalized(), Vector3.UP)
 	input.steer = clampf(ang * 2.4, -1.0, 1.0)
+	# Edge avoidance: steer back toward the middle when close to the road edge.
+	var loc: Dictionary = racer._loc
+	if not loc.is_empty() and not loc.get("on_fork", false):
+		var lat: float = loc.lateral
+		var room: float = float(loc.half_width) - 1.2
+		if absf(lat) > room:
+			input.steer = clampf(input.steer + signf(lat) * clampf((absf(lat) - room) * 0.6, 0.0, 1.0), -1.0, 1.0)
 
 	# How sharp is the road ahead? Compare tangents.
 	var t0 := path.tangent[i]

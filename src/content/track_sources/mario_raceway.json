@@ -1,0 +1,25 @@
+{
+	"id": "mario_raceway",
+	"name": "Mario Raceway (MK64)",
+	"obj": "Tracks/Mario Raceway/Mario Raceway.obj",
+	"mtl": "Tracks/Mario Raceway/Mario Raceway.mtl",
+	"tex_dir": "Tracks/Mario Raceway",
+	"scale": 100.0,
+	"centreline": {"method": "road_skeleton"},
+	"classes": {
+		"method": "textures",
+		"road": ["7EEA0D6A_c.png", "92276F6_c.png"],
+		"wall": ["695C0BE7_c.png", "1B41E2F3_c.png", "7BB9F917_ctran.png", "172433F5_ctran.png",
+			"124EC633_c.png", "191496A1_c.png", "4212FC5_c.png"],
+		"deco": ["1BCE005B_c.png", "2423501B_c.png", "25AE82BA_c.png", "55C14C02_c.png", "5D98AD32_c.png",
+			"60FB6A23_c.png", "762A9DF7_c.png", "7F15E57A_c.png", "62E1B663_c.png", "67511A83_ctran.png",
+			"5DD58B0C_atran.png", "hat.png", "4447C93F_c.png", "19B3576F_c.png"],
+		"alpha_if_name_contains": ["tran", "hat.png"]
+	},
+	"road_texture": "7EEA0D6A_c.png",
+	"grass_texture": "3ED14A28_c.png",
+	"rail_texture": "695C0BE7_c.png",
+	"start_texture": "92276F6_c.png",
+	"default_start": [0.0, 23.0],
+	"default_via": [0.0, 60.0]
+}

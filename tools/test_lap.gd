@@ -10,9 +10,13 @@ var max_frames := 60 * 240
 var seen := {}
 var disp := {}
 var splits := {}
+var _trace: Array = []      ## --trace=from,to : print motion while a racer is in that index range
 
 
 func _ready() -> void:
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--trace="):
+			_trace = Array(a.trim_prefix("--trace=").split(",")).map(func(x): return int(x))
 	var r := Race.new()
 	r.player_index = -1
 	r.laps = 1
@@ -39,9 +43,9 @@ func _physics_process(_d: float) -> void:
 			rc.movement.take_hit(0.6)
 	for rc in race.racers:
 		var v := rc.visual
-		if v is SonicVisual:
-			seen[rc.display_name][(v as SonicVisual).current_state] = true
-			disp[rc.display_name] = maxf(disp[rc.display_name], (v as SonicVisual).rig.max_displacement())
+		if v is RunnerVisual:
+			seen[rc.display_name][(v as RunnerVisual).current_state] = true
+			disp[rc.display_name] = maxf(disp[rc.display_name], (v as RunnerVisual).rig.max_displacement())
 		elif v is KartVisual:
 			var kv := v as KartVisual
 			if absf(kv.spin) > 0.1: seen[rc.display_name]["wheel_spin"] = true
@@ -57,8 +61,11 @@ func _physics_process(_d: float) -> void:
 		if rc.movement.anim.jumping: seen[rc.display_name]["jumping"] = true
 		if rc.track.locate(rc.global_position, rc.track_index).on_fork: seen[rc.display_name]["alt_route"] = true
 	for rc in race.racers:
-		if rc.display_name == "Mario" and rc.track_index >= 300 and rc.track_index <= 352 and frames % 6 == 0 and OS.get_cmdline_user_args().has("--trace"):
-			print("   trace f=%d idx=%d pos=%s v=%s floor=%s surf=%s rail=%s" % [frames, rc.track_index, rc.global_position.snapped(Vector3.ONE*0.1), rc.velocity.snapped(Vector3.ONE*0.1), rc.is_on_floor(), rc.movement.floor_surface(), rc.on_rail])
+		if _trace.size() == 2 and rc.track_index >= _trace[0] and rc.track_index <= _trace[1] and frames % 6 == 0 and frames < 60 * 40:
+			print("   trace %s f=%d idx=%d pos=%s v=%s floor=%s surf=%s rail=%s" % [rc.display_name, frames, rc.track_index, rc.global_position.snapped(Vector3.ONE*0.1), rc.velocity.snapped(Vector3.ONE*0.1), rc.is_on_floor(), rc.movement.floor_surface(), rc.on_rail])
+			for ci in rc.get_slide_collision_count():
+				var c := rc.get_slide_collision(ci)
+				print("      hit n=%s at=%s %s" % [c.get_normal().snapped(Vector3.ONE * 0.01), c.get_position().snapped(Vector3.ONE * 0.01), c.get_collider().name])
 	if frames % 600 == 0:
 		for rc in race.racers:
 			print("t=%5.1fs %-6s cp=%d lap=%d idx=%d speed=%.1f pos=%s respawns=%d" % [rc.race_time, rc.display_name,

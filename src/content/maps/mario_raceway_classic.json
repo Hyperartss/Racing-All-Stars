@@ -1,0 +1,30 @@
+{
+	"id": "mario_raceway_classic",
+	"name": "Mario Raceway",
+	"subtitle": "The full MK64 circuit",
+	"laps": 3,
+	"layout": {
+		"segments": [
+			{
+				"source": "mario_raceway",
+				"full": true,
+				"start": [
+					0.0,
+					23.0
+				],
+				"via": [
+					0.0,
+					60.0
+				]
+			}
+		],
+		"connectors": [],
+		"start": {
+			"segment": 0
+		},
+		"checkpoints": 10
+	},
+	"length": 995,
+	"data": "res://assets/maps/mario_raceway_classic/track.json",
+	"preview": "res://assets/maps/mario_raceway_classic/preview.png"
+}
