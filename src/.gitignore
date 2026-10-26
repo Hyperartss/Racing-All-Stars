@@ -1,8 +1,0 @@
-# Godot
-.godot/
-/android/
-*.translation
-
-# Tool scratch output
-/dumps/
-/out/
