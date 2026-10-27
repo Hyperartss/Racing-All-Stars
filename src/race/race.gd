@@ -34,6 +34,8 @@ func _ready() -> void:
 	track.name = "Track"
 	add_child(track)
 	var map_def: Dictionary = RacerTypes.maps().get(map_id, {})
+	if map_def.is_empty():
+		push_error("Race: map '%s' is missing or not baked - loading the default course instead" % map_id)
 	track.load_track(String(map_def.get("data", Track.DEFAULT_DATA)))
 	for k in roster.size():
 		var ctrl: RacerController = PlayerController.new() if k == player_index else AIController.new(k + 1)

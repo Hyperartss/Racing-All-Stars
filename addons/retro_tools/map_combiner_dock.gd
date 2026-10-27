@@ -9,11 +9,15 @@ extends HSplitContainer
 ## click on the canvas = choose a cut point / piece / start.
 ## Bake runs tools/bake/trackbake.py (Python 3 + numpy, pillow, opencv-python,
 ## scikit-image, networkx, matplotlib) and the new map appears in the game's menu.
+## "Set up Python" makes a private Python environment with those packages (in the
+## project's user:// folder, outside res://) and Bake uses it automatically.
 
 const MAPS := "res://content/maps/"
 const SOURCES := "res://content/track_sources/"
 const BAKER := "res://tools/bake/trackbake.py"
 const CFG := "user://retro_tools.cfg"
+const PY_MODULES := ["numpy", "PIL", "cv2", "skimage", "networkx", "matplotlib"]
+const PY_PACKAGES := ["numpy", "pillow", "opencv-python-headless", "scikit-image", "networkx", "matplotlib"]
 
 var map_id := ""
 var map_def := {}
@@ -36,6 +40,9 @@ var python_edit: LineEdit
 var log_box: TextEdit
 var canvas: Control
 var _building := false
+var bake_btn: Button
+var setup_btn: Button
+var _thread: Thread
 
 
 func _ready() -> void:
@@ -56,7 +63,7 @@ func _ready() -> void:
 	map_pick.item_selected.connect(func(i: int) -> void: load_map(map_pick.get_item_metadata(i)))
 	row.add_child(map_pick)
 	_btn(row, "Save", save_map)
-	_btn(row, "Bake", bake)
+	bake_btn = _btn(row, "Bake", bake)
 
 	var row2 := HBoxContainer.new()
 	v.add_child(row2)
@@ -113,14 +120,18 @@ func _ready() -> void:
 	_lbl(row5, "Python")
 	python_edit = LineEdit.new()
 	python_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	python_edit.text = _cfg_get("python", "python3")
+	python_edit.placeholder_text = "auto"
+	python_edit.tooltip_text = "Leave empty to use the environment made by \"Set up Python\" (or python3)."
+	python_edit.text = _cfg_get("python", "")
 	python_edit.text_changed.connect(func(t: String) -> void: _cfg_set("python", t))
 	row5.add_child(python_edit)
+	setup_btn = _btn(row5, "Set up Python", setup_python)
 	log_box = TextEdit.new()
 	log_box.custom_minimum_size = Vector2(0, 90)
 	log_box.editable = false
 	v.add_child(log_box)
 
+	log_line("Python for baking: " + python_path())
 	canvas = preload("res://addons/retro_tools/map_canvas.gd").new()
 	canvas.dock = self
 	canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -164,6 +175,11 @@ func _spin(p: Control, lo: float, hi: float, step: float, val: float, cb: Callab
 func log_line(t: String) -> void:
 	log_box.text += t + "\n"
 	log_box.scroll_vertical = log_box.get_line_count()
+
+
+func _exit_tree() -> void:
+	if _thread and _thread.is_started():
+		_thread.wait_to_finish()
 
 
 static func _read_json(path: String) -> Variant:
@@ -299,28 +315,154 @@ func ensure_analysis(sid: String) -> void:
 		analysis[sid] = a
 
 
-func run_python(args: Array) -> String:
+# --- Python ------------------------------------------------------------------------
+
+static func _venv_dir() -> String:
+	return OS.get_user_data_dir().path_join("bake_venv")
+
+
+static func _venv_python() -> String:
+	if OS.get_name() == "Windows":
+		return _venv_dir().path_join("Scripts/python.exe")
+	return _venv_dir().path_join("bin/python")
+
+
+static func _system_python() -> String:
+	return "python" if OS.get_name() == "Windows" else "python3"
+
+
+## The Python used for analysing/baking: the dock's field if set, else the private
+## environment from "Set up Python", else the system python3.
+func python_path() -> String:
+	var t := python_edit.text.strip_edges() if python_edit else ""
+	if t != "":
+		return t
+	if FileAccess.file_exists(_venv_python()):
+		return _venv_python()
+	return _system_python()
+
+
+## Runs a program; returns [exit code, output]. Safe to call from a thread.
+static func _exec(prog: String, args: Array) -> Array:
 	var out: Array = []
-	var script := ProjectSettings.globalize_path(BAKER)
-	var all: PackedStringArray = [script]
-	for a in args:
-		all.append(String(a))
-	var code := OS.execute(python_edit.text if python_edit else "python3", all, out, true)
-	var text := "\n".join(out)
-	if code != 0:
-		text += "\n(python exited with code %d - is Python 3 with numpy/opencv/scikit-image installed?)" % code
+	var a := PackedStringArray()
+	for x in args:
+		a.append(String(x))
+	var code := OS.execute(prog, a, out, true)
+	return [code, "\n".join(out).strip_edges()]
+
+
+## "" if every bake package imports, else what is missing.
+static func _missing_modules(py: String) -> String:
+	var check := "import importlib.util as u, sys; m = [n for n in sys.argv[1:] if u.find_spec(n) is None]; print(' '.join(m)); sys.exit(1 if m else 0)"
+	var r := _exec(py, ["-c", check] + PY_MODULES)
+	if int(r[0]) == 0:
+		return ""
+	var lines := String(r[1]).split("\n")
+	var last := lines[lines.size() - 1].strip_edges() if lines.size() > 0 else ""
+	for name in last.split(" ", false):
+		if not PY_MODULES.has(name):
+			return "(could not run Python \"%s\": %s)" % [py, last]
+	return last
+
+
+func run_python(args: Array) -> String:
+	var r := _exec(python_path(), [ProjectSettings.globalize_path(BAKER)] + args)
+	var text: String = r[1]
+	if int(r[0]) != 0:
+		text += "\n(python exited with code %d)" % int(r[0])
 	return text
 
 
+func _busy(on: bool) -> void:
+	bake_btn.disabled = on
+	setup_btn.disabled = on
+
+
+func _start_job(job: Callable) -> void:
+	if _thread and _thread.is_started():
+		if _thread.is_alive():
+			log_line("Busy - wait for the current job to finish.")
+			return
+		_thread.wait_to_finish()
+	_thread = Thread.new()
+	_busy(true)
+	_thread.start(job)
+
+
+func _job_done() -> void:
+	if _thread and _thread.is_started():
+		_thread.wait_to_finish()
+	_busy(false)
+
+
+## Makes a private Python environment (outside the project) with the bake packages.
+func setup_python() -> void:
+	var typed := python_edit.text.strip_edges()
+	var base := typed if typed != "" and typed != _venv_python() else _system_python()
+	var venv := _venv_dir()
+	var vpy := _venv_python()
+	log_line("Setting up Python in %s - downloads ~150 MB the first time and takes a few minutes..." % venv)
+	_start_job(func() -> void:
+		var msg: Array = []
+		var ok := true
+		if not FileAccess.file_exists(vpy):
+			var r := _exec(base, ["-m", "venv", venv])
+			if int(r[0]) != 0 or not FileAccess.file_exists(vpy):
+				ok = false
+				msg.append(String(r[1]))
+				msg.append("Could not create the environment. On Linux Mint / Ubuntu install venv support first:\n    sudo apt install python3-venv\nthen press Set up Python again.")
+		if ok:
+			var r2 := _exec(vpy, ["-m", "pip", "install", "--disable-pip-version-check"] + PY_PACKAGES)
+			var tail := String(r2[1]).split("\n")
+			msg.append("\n".join(tail.slice(maxi(0, tail.size() - 3))))
+			ok = int(r2[0]) == 0 and _missing_modules(vpy) == ""
+		msg.append("Python is ready - Bake will use it." if ok else "Python setup FAILED (see above).")
+		_setup_done.call_deferred("\n".join(msg), ok))
+
+
+func _setup_done(text: String, ok: bool) -> void:
+	_job_done()
+	log_line(text)
+	if ok:
+		python_edit.text = ""
+		_cfg_set("python", "")
+	log_line("Python for baking: " + python_path())
+
+
 func bake() -> void:
+	if map_id == "":
+		return
+	_ensure_cuts()
+	_refresh_segments()
 	save_map()
-	log_line("Baking %s (this can take a minute)..." % map_id)
-	log_line(run_python(["bake", map_id]))
+	var py := python_path()
+	var args: Array = [ProjectSettings.globalize_path(BAKER), "bake", map_id]
+	log_line("Baking %s with %s (this can take a minute)..." % [map_id, py])
+	_start_job(func() -> void:
+		var missing := _missing_modules(py)
+		if missing != "":
+			_bake_done.call_deferred(-1, "Missing Python packages: %s\nPress \"Set up Python\" once, then Bake again." % missing)
+			return
+		var r := _exec(py, args)
+		_bake_done.call_deferred(int(r[0]), String(r[1])))
+
+
+func _bake_done(code: int, text: String) -> void:
+	_job_done()
+	log_line(text)
+	if code != 0:
+		if String(map_def.get("data", "")) == "":
+			log_line("BAKE FAILED - %s is saved, but it has no track yet so the game won't list it." % map_id)
+		else:
+			log_line("BAKE FAILED - the game still has the previous bake of %s." % map_id)
+		return
 	var m: Variant = _read_json(MAPS + map_id + ".json")
 	if m is Dictionary:
 		map_def["length"] = m.get("length", 0)
 		map_def["data"] = m.get("data", "")
 		map_def["preview"] = m.get("preview", "")
+	log_line("Baked - %s is now in the game's map list." % map_id)
 	if Engine.is_editor_hint():
 		EditorInterface.get_resource_filesystem().scan()
 
@@ -344,25 +486,58 @@ func _refresh_segments() -> void:
 	canvas.queue_redraw()
 
 
-func add_segment() -> void:
-	var sid: String = String(sources.keys()[0])
+func _method(sid: String) -> String:
+	return String(sources.get(sid, {}).get("centreline", {}).get("method", "groups"))
+
+
+## Gives a segment that is not a whole loop the cut data its track type needs
+## (from/to for skeleton tracks, a piece range for grouped tracks), keeping any
+## values it already has.
+func _default_cut(s: Dictionary) -> void:
+	var sid := String(s.source)
+	ensure_analysis(sid)
 	var a: Dictionary = analysis.get(sid, {})
-	var s := {"source": sid, "offset": [0.0, "auto", 0.0], "yaw": 0.0}
-	if String(sources[sid].centreline.method) == "groups":
-		s["groups"] = [0, 60]
-		s["scenery"] = "near"
+	if _method(sid) == "groups":
+		s.erase("from")
+		s.erase("to")
+		s.erase("via")
+		if not s.has("groups"):
+			# The first piece has nothing before it to cut against, so start a little in.
+			var pcs: Array = a.get("pieces", [])
+			s["groups"] = [int(pcs[10][0]), int(pcs[60][0])] if pcs.size() > 61 else [10, 60]
+		if not s.has("scenery"):
+			s["scenery"] = "near"
 	else:
+		s.erase("groups")
 		var cl: Array = a.get("centreline", [[0, 0, 0], [10, 0, 0]])
-		s["from"] = [cl[0][0], cl[0][2]]
-		s["to"] = [cl[cl.size() / 3][0], cl[cl.size() / 3][2]]
-		s["scenery"] = "all"
-	for other in layout.segments:
-		other.erase("full")
-	layout.segments.append(s)
+		if not s.has("from"):
+			s["from"] = [cl[0][0], cl[0][2]]
+		if not s.has("to"):
+			s["to"] = [cl[cl.size() / 3][0], cl[cl.size() / 3][2]]
+		if not s.has("scenery"):
+			s["scenery"] = "all"
+	if not s.has("offset"):
+		s["offset"] = [0.0, "auto", 0.0]
+	if not s.has("yaw"):
+		s["yaw"] = 0.0
+
+
+## Every segment of a multi-segment map needs cut data (older saves may lack it).
+func _ensure_cuts() -> void:
+	if layout.segments.size() == 1 and layout.segments[0].get("full", false):
+		return
+	for s in layout.segments:
+		s.erase("full")
+		_default_cut(s)
 	while layout.connectors.size() < layout.segments.size():
 		layout.connectors.append({"loop": false})
+
+
+func add_segment() -> void:
+	var sid: String = String(sources.keys()[0])
+	layout.segments.append({"source": sid})
+	_ensure_cuts()
 	sel = layout.segments.size() - 1
-	ensure_analysis(sid)
 	_refresh_segments()
 
 
@@ -408,15 +583,10 @@ func _build_segment_box() -> void:
 	src_pick.item_selected.connect(func(ix: int) -> void:
 		var sid2: String = src_pick.get_item_metadata(ix)
 		s["source"] = sid2
-		ensure_analysis(sid2)
-		if String(sources[sid2].centreline.method) == "groups":
-			s.erase("from"); s.erase("to"); s.erase("via")
-			s["groups"] = [0, 60]
-		else:
-			s.erase("groups")
-			var cl: Array = analysis.get(sid2, {}).get("centreline", [[0, 0, 0]])
-			s["from"] = [cl[0][0], cl[0][2]]
-			s["to"] = [cl[cl.size() / 3][0], cl[cl.size() / 3][2]]
+		for k in ["from", "to", "via", "groups", "scenery"]:
+			s.erase(k)
+		if not s.get("full", false):
+			_default_cut(s)
 		_refresh_segments())
 	g.add_child(src_pick)
 	var method := String(sources.get(s.source, {}).get("centreline", {}).get("method", "groups"))
@@ -432,12 +602,13 @@ func _build_segment_box() -> void:
 			s["full"] = true
 		else:
 			s.erase("full")
+			_default_cut(s)
 		_refresh_segments())
 	g.add_child(full)
 	if not s.get("full", false):
 		if method == "groups":
 			if not s.has("groups"):
-				s["groups"] = [0, 60]
+				_default_cut(s)
 			_lbl(g, "Pieces")
 			var h := HBoxContainer.new()
 			g.add_child(h)

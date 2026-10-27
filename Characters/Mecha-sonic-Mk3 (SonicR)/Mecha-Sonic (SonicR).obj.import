@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://bf4sw0hrl6ofs"
+path="res://.godot/imported/Mecha-Sonic (SonicR).obj-55832e1dd339f606ae0d2e7805e0b936.mesh"
+
+[deps]
+
+files=["res://.godot/imported/Mecha-Sonic (SonicR).obj-55832e1dd339f606ae0d2e7805e0b936.mesh"]
+
+source_file="res://models/3DAssets/Player/Sonic R/Mecha-sonic-Mk3 (SonicR)/Mecha-Sonic (SonicR).obj"
+dest_files=["res://.godot/imported/Mecha-Sonic (SonicR).obj-55832e1dd339f606ae0d2e7805e0b936.mesh", "res://.godot/imported/Mecha-Sonic (SonicR).obj-55832e1dd339f606ae0d2e7805e0b936.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

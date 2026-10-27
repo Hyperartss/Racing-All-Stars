@@ -26,7 +26,15 @@ static var _loaded := false
 static func reload() -> void:
 	_chars = _load_dir(CONTENT + "characters")
 	_karts = _load_dir(CONTENT + "karts")
-	_maps = _load_dir(CONTENT + "maps")
+	_maps = {}
+	var all_maps := _load_dir(CONTENT + "maps")
+	for id in all_maps:
+		# Only maps the Map Combiner has baked (a saved-but-unbaked map has no track).
+		var data := String(all_maps[id].get("data", ""))
+		if data != "" and FileAccess.file_exists(data):
+			_maps[id] = all_maps[id]
+		else:
+			push_warning("RacerTypes: map '%s' is not baked yet (open the Map Combiner and press Bake)" % id)
 	_loaded = true
 
 

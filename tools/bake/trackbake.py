@@ -294,6 +294,8 @@ class Segment:
             cl = np.roll(cl, -i0, axis=0); w = np.roll(w, -i0)
             self.polys, self.cl, self.w = polys, cl, w
             return
+        if "to" not in self.cfg or "from" not in self.cfg:
+            raise SystemExit(f"segment {self.index + 1} ({src.id}): no cut points - set From and To in the Map Combiner")
         i1 = nearest(cl, self.cfg["to"])
         # Direction: the arc from -> to that contains `via` (default: the longer one).
         fwd_len = (i1 - i0) % n
@@ -316,7 +318,10 @@ class Segment:
     def _build_groups(self):
         src = self.src
         main = src.cfg["centreline"]["main"]
+        if not self.closed and "groups" not in self.cfg:
+            raise SystemExit(f"segment {self.index + 1} ({src.id}): no piece range - set Pieces in the Map Combiner")
         g0, g1 = (main if self.closed else self.cfg["groups"])
+        g0, g1 = int(g0), int(g1)
         ranges = [(g0, g1)]
         branch_cfg = []
         for b in src.cfg.get("branches", []):

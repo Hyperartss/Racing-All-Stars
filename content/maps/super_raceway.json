@@ -1,0 +1,61 @@
+{
+	"id": "super_raceway",
+	"laps": 3.0,
+	"layout": {
+		"checkpoints": 10.0,
+		"connectors": [
+			{
+				"loop": false
+			},
+			{
+				"loop": false
+			}
+		],
+		"segments": [
+			{
+				"from": [
+					-242.5,
+					20.5
+				],
+				"offset": [
+					-16.0,
+					"auto",
+					-77.5
+				],
+				"scenery": "all",
+				"source": "mario_raceway",
+				"to": [
+					-1.0,
+					58.5
+				],
+				"yaw": 0.0
+			},
+			{
+				"from": [
+					1.0,
+					-29.0
+				],
+				"offset": [
+					-24.0,
+					"auto",
+					86.5
+				],
+				"scenery": "all",
+				"source": "mario_raceway",
+				"to": [
+					-243.0,
+					-123.0
+				],
+				"yaw": 0.0
+			}
+		],
+		"start": {
+			"segment": 0.0
+		}
+	},
+	"name": "Super Raceway",
+	"subtitle": "",
+	"length": 1336,
+	"data": "res://assets/maps/super_raceway/track.json",
+	"preview": "res://assets/maps/super_raceway/preview.png"
+}
