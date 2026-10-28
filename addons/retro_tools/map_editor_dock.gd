@@ -14,10 +14,23 @@ extends HSplitContainer
 ##               z-fighting pieces, a stray wall). The brush radius is in the panel.
 ##   Part (4)    click one triangle: the whole connected piece around it goes (a tree,
 ##               a sign, a floating chunk). Huge pieces are refused - use the brush.
-##   Fill (5)    click the course to lay a textured patch (a hole in the ground, a gap at
-##               a seam). It copies the clicked triangle's texture and UV mapping, so it
-##               blends in; size = brush size, texture can be overridden.
+##   Fill (5)    drag a brush to close a gap, a hole or a seam - on the ground or on a
+##               wall. Only empty cells are painted: geometry already on the level is
+##               left alone, so the sheet fills the hole and stops at its rim. The level
+##               is the surface under the cursor, else the face this editor erased there,
+##               else the surface around the cursor, else the last level used. One stroke
+##               is one patch, it sits on the side being looked at, and painting over an
+##               earlier fill extends that patch instead of stacking coplanar quads.
 ##   Restore (6) paint erased triangles back in (the inverse of Erase).
+##   Hole (7)    click inside a gap: the whole enclosed empty outline is filled in one go
+##               (a long tear along the road, a chunk out of a wall). A break that is open
+##               along a side - a broken narrow path - is filled only with the strip
+##               between its two ends. A gap too wide for that is refused; use Fill (5).
+##   Edges (8)   click rim edges around a gap, then Fill edges (Enter): the picked edges
+##               are chained, the outline is triangulated (or two rims are bridged) using
+##               their own vertices, with the texture/UVs of the surface the rim belongs to
+##               and triangles split to that surface's density. Click an edge again to
+##               remove it; the panel shows the live tri count, area and texture.
 ##
 ## Everything is written to assets/maps/<id>/decor.json, which Track reads when the
 ## map loads (props spawn, patches are built, erased triangles are skipped). Re-baking
@@ -31,6 +44,27 @@ const UNDO_LIMIT := 60
 const CELL := 16.0                 ## pick grid cell size in metres
 const MAX_PART := 4000            ## Delete part refuses pieces bigger than this
 const MAX_PART_SURFACE := 60000   ## ... and surfacing bigger than this is too slow to weld
+const MAX_FILL_CELLS := 3500      ## cells one fill stroke may paint
+const MAX_PATCH_CELLS := 16000    ## a fill patch stops growing past this many cells
+const FILL_LIFT := 0.035          ## metres the filled sheet floats above what it covers
+const FILL_CONFORM := 0.5         ## how far a sheet corner may drape onto real geometry
+const FILL_BAND := 0.25           ## geometry this close to the level already fills that cell
+const FILL_HOLE_BAND := 1.0       ## Hole treats geometry this close as its rim, so it does
+                                  ## not run off the edge of the surface it is closing
+const FILL_CORNERS := [Vector2i(0, 0), Vector2i(1, 0), Vector2i(1, 1), Vector2i(0, 1)]
+const FILL_NEIGHBOURS := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+const MAX_HOLE_CELLS := 2000       ## a hole bigger than this is not a hole, it is the void
+const MAX_HOLE_SPAN := 250         ## cells from the click, so a runaway fill is caught
+const FILL_HOLE_REACH := 8         ## cells of surface that must be on both sides of an
+                                  ## open gap for Hole to close it
+const MAX_EDGE_EDGES := 128       ## rim edges one edge fill may join
+const EDGE_PICK_PX := 16.0        ## how near the cursor an edge must be to be picked
+const EDGE_PROBE_RINGS := 3       ## probe rings around the cursor tried (x1, x3, x9) for
+                                  ## the surface a gap is cut into, before giving up
+const EDGE_REACH_MIN := 2.5       ## metres around the click searched for rim edges
+const EDGE_REACH_MAX := 14.0
+const MAX_EDGE_TRIS := 12000      ## an edge fill stops subdividing past this
+const MAX_EDGE_SUBDIV := 3        ## midpoint subdivision rounds when matching density
 
 # --- data ---------------------------------------------------------------------------
 var map_id := ""
@@ -49,8 +83,43 @@ var cam_yaw := 0.9
 var cam_pitch := 0.55
 var cam_dist := 140.0
 var focus := Vector3.ZERO
-var _drag := 0                     ## 0 none, 1 orbit, 2 pan, 3 gizmo, 4 brush stroke
+var _drag := 0                     ## 0 none, 1 orbit, 2 pan, 3 gizmo, 4 brush, 5 fill
 var _stroke_dirty := false
+
+# Fill stroke: a level (plane + UV seed) and the cells painted so far.
+var _fill_ok := false
+var _fill_plane := Plane()
+var _fill_origin := Vector3.ZERO
+var _fill_normal := Vector3.UP
+var _fill_u := Vector3.RIGHT
+var _fill_v := Vector3.BACK
+var _fill_cell := 1.0
+var _fill_seed := {}
+var _fill_texture := ""
+var _fill_class := "off"
+var _fill_alpha := false
+var _fill_cells := {}              ## Vector2i cell -> true (only empty ones are painted)
+var _fill_seen := {}               ## Vector2i cell -> true (already tested this stroke)
+var _fill_keys: Array[Vector2i] = []
+var _fill_last := Vector2.INF      ## last stamped point, in cells
+var _fill_full := false
+var _fill_note := ""                ## extra text for the next commit message
+var _fill_cover := false            ## Fill (brush) may paint over geometry when asked
+var fill_preview: MultiMeshInstance3D
+
+# Edge fill: boundary (rim) edges picked by hand, then closed with real triangles.
+var edge_sel: Array = []           ## [{a, b, ka, kb, si, f, n, tex, cls, alpha}]
+var edge_hover: Dictionary = {}
+var edge_sel_mesh: MeshInstance3D
+var edge_hover_mesh: MeshInstance3D
+var edge_rim_mesh: MeshInstance3D
+var _edge_hover_cache: Array = []   ## rim edges from the last hover gather
+var _edge_hover_vp := Vector2.INF
+var _edge_hover_xf := Transform3D()
+var _edge_hover_dirty := true
+var edge_label: Label
+var edge_density: CheckBox
+var edge_fill_btn: Button
 
 # Gizmo: arrows for move, a Y ring for rotate, a Y handle for scale.
 var gizmo_root: Node3D
@@ -97,6 +166,7 @@ var random_yaw: CheckBox
 var props_label: Label
 var brush_radius: SpinBox
 var patch_pick: OptionButton
+var cover_solid: CheckBox
 var pos_spins: Array[SpinBox] = []
 var yaw_spin: SpinBox
 var scale_spin: SpinBox
@@ -104,6 +174,7 @@ var sel_label: Label
 var surf_list: ItemList
 var surf_label: Label
 var status_label: Label
+var view_status: Label
 var preview_holder: SubViewportContainer
 var viewport: SubViewport
 var _autoloaded := false
@@ -165,7 +236,8 @@ func _build_left() -> void:
 	v.add_child(grid)
 	var group := ButtonGroup.new()
 	for t in [["select", "Select (1)"], ["place", "Place (2)"], ["erase", "Erase (3)"],
-			["part", "Part (4)"], ["fill", "Fill (5)"], ["restore", "Restore (6)"]]:
+			["part", "Part (4)"], ["fill", "Fill (5)"], ["restore", "Restore (6)"],
+			["hole", "Hole (7)"], ["edge", "Edges (8)"]]:
 		var b := Button.new()
 		b.text = String(t[1])
 		b.toggle_mode = true
@@ -176,8 +248,10 @@ func _build_left() -> void:
 			"place": "Click the course to add the palette prop",
 			"erase": "Drag a brush over baked geometry to erase triangles",
 			"part": "Click a triangle: delete its whole connected piece",
-			"fill": "Click the course to lay a textured patch there",
+			"fill": "Drag to paint ground over a gap or hole (works over empty space too)",
 			"restore": "Paint erased triangles back in",
+			"hole": "Click inside a gap to fill its whole enclosed outline in one go",
+			"edge": "Click the empty middle of a gap to take its whole rim, or a single rim edge to add just that one. Fill edges closes it with real triangles",
 		}.get(String(t[0]), "")
 		b.toggled.connect(_on_tool_toggled.bind(String(t[0])))
 		grid.add_child(b)
@@ -186,19 +260,45 @@ func _build_left() -> void:
 	var g2 := GridContainer.new()
 	g2.columns = 2
 	v.add_child(g2)
-	_lbl(g2, "Brush / patch size")
+	_lbl(g2, "Brush / fill size")
 	brush_radius = SpinBox.new()
 	brush_radius.min_value = 0.25
 	brush_radius.max_value = 40.0
 	brush_radius.step = 0.25
 	brush_radius.value = 4.0
-	brush_radius.tooltip_text = "Erase and Restore brush radius, and Fill patch size, in metres"
+	brush_radius.tooltip_text = "Erase, Restore and Fill brush radius, in metres"
 	brush_radius.value_changed.connect(_on_brush_radius_changed)
 	g2.add_child(brush_radius)
 	_lbl(g2, "Fill texture")
 	patch_pick = OptionButton.new()
-	patch_pick.tooltip_text = "Texture for Fill patches - \"Same as surface\" copies the clicked one"
+	patch_pick.tooltip_text = "Texture for Fill patches - \"Same as surface\" copies the one under the cursor"
 	g2.add_child(patch_pick)
+	_lbl(g2, "Fill over ground")
+	cover_solid = CheckBox.new()
+	cover_solid.text = "Cover existing"
+	cover_solid.tooltip_text = "Off: Fill only closes empty space. On: it also paints over\n" + \
+		"geometry that is already there (3.5 cm above it, so it cannot z-fight) - use it for\n" + \
+		"an ugly strip that is a surface rather than a hole."
+	g2.add_child(cover_solid)
+
+	# --- edge fill -----------------------------------------------------------------
+	_lbl(v, "Edge fill")
+	row = HBoxContainer.new()
+	v.add_child(row)
+	edge_fill_btn = _btn(row, "Fill edges", fill_edges)
+	edge_fill_btn.disabled = true
+	edge_fill_btn.tooltip_text = "Close the selected rim with real triangles (Enter): the rim's own\n" + \
+		"vertices are used, so the sheet meets the course exactly, textured like the\n" + \
+		"surface it belongs to."
+	_btn(row, "Clear edges", clear_edges).tooltip_text = "Forget the selected rim edges"
+	edge_density = CheckBox.new()
+	edge_density.text = "Match tri density"
+	edge_density.button_pressed = true
+	edge_density.tooltip_text = "Split the fill until its triangles are about the size of the\n" + \
+		"surface next to the rim, instead of one big slab."
+	edge_density.toggled.connect(func(_on: bool) -> void: _edge_refresh())
+	v.add_child(edge_density)
+	edge_label = _muted(v, "Edges: click the rim edge of a gap, Shift+click for the whole rim, then Fill edges (Enter).")
 
 	row = HBoxContainer.new()
 	v.add_child(row)
@@ -323,6 +423,12 @@ func _build_right() -> void:
 	props_label.add_theme_color_override("font_color", Color(0.62, 0.65, 0.72))
 	tools.add_child(props_label)
 
+	view_status = Label.new()
+	view_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	view_status.add_theme_color_override("font_color", Color(0.78, 0.81, 0.86))
+	view_status.text = "Pick a map and a tool."
+	right.add_child(view_status)
+
 	preview_holder = SubViewportContainer.new()
 	preview_holder.stretch = true
 	preview_holder.custom_minimum_size = Vector2(420, 210)
@@ -404,7 +510,14 @@ func _build_right() -> void:
 	brush_marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	brush_marker.visible = false
 	preview_root.add_child(brush_marker)
-	preview_holder.mouse_exited.connect(func() -> void: _hide_brush())
+	preview_holder.mouse_exited.connect(func() -> void:
+		_hide_brush()
+		_edge_rim_redraw([]))
+
+	# Rim edges picked for the edge fill (drawn over the course, like the gizmo).
+	edge_sel_mesh = _line_mesh()
+	edge_hover_mesh = _line_mesh()
+	edge_rim_mesh = _line_mesh()
 
 	_update_camera()
 
@@ -446,6 +559,10 @@ func _muted(p: Control, text: String) -> Label:
 func status(text: String) -> void:
 	if status_label != null:
 		status_label.text = text
+	# Also right above the 3D view: the panel status can be scrolled out of sight, and a
+	# tool that quietly does nothing is the worst kind.
+	if view_status != null:
+		view_status.text = text
 
 
 static func _read_json(path: String) -> Dictionary:
@@ -558,6 +675,16 @@ func load_map(id: String) -> void:
 	track.load_track(data_path)
 	sel = -1
 	_grid_built = false
+	_fill_ok = false
+	_fill_cells.clear()
+	_fill_seen.clear()
+	_fill_keys.clear()
+	_fill_clear_preview()
+	edge_sel.clear()
+	edge_hover = {}
+	_edge_hover_dirty = true
+	_edge_redraw()
+	_edge_refresh()
 	_build_pick_grid()
 	_refresh_patch_textures()
 	_frame()
@@ -645,10 +772,15 @@ func _on_mode_toggled(on: bool, m: String) -> void:
 
 func _set_tool(t: String) -> void:
 	tool = t
-	var ids := ["select", "place", "erase", "part", "fill", "restore"]
+	var ids := ["select", "place", "erase", "part", "fill", "restore", "hole", "edge"]
 	for i in mini(tool_btns.size(), ids.size()):
 		tool_btns[i].set_pressed_no_signal(ids[i] == t)
 	_hide_brush()
+	_fill_clear_preview()
+	if t != "edge":
+		edge_hover = {}
+		_edge_hover_redraw()
+		_edge_rim_redraw([])
 	match t:
 		"select":
 			status("Select: click a prop, then drag the gizmo. Delete removes it.")
@@ -659,9 +791,13 @@ func _set_tool(t: String) -> void:
 		"part":
 			status("Part: click a triangle to delete its whole connected piece (max %d triangles)." % MAX_PART)
 		"fill":
-			status("Fill: click the course to lay a %.1f m patch there." % brush_radius.value)
+			status("Fill: drag over a gap or hole to paint %.1f m of ground there." % brush_radius.value)
 		"restore":
 			status("Restore: drag the brush over erased spots to bring them back.")
+		"hole":
+			status("Hole: click inside a gap to fill its whole enclosed outline.")
+		"edge":
+			status("Edges: click rim edges around a gap (Shift+click takes the whole rim), then Fill edges (Enter).")
 
 
 func _set_gizmo_mode(m: String) -> void:
@@ -938,6 +1074,7 @@ func restore_all() -> void:
 func _apply_decor() -> void:
 	if track == null:
 		return
+	_edge_hover_dirty = true
 	var keep := sel
 	track.apply_decor(decor)
 	sel = mini(keep, _props().size() - 1)
@@ -1006,6 +1143,7 @@ func _restore(snapshot: String) -> void:
 		decor["patches"] = []
 	_committed = JSON.stringify(decor)
 	_last_tag = ""
+	_edge_hover_dirty = true
 	if track != null:
 		track.apply_decor(decor)
 	sel = mini(sel, _props().size() - 1)
@@ -1205,7 +1343,7 @@ func _is_hidden_face(si: int, f: int) -> bool:
 
 ## Closest visible baked triangle along the ray from a viewport position.
 func _pick_triangle(vp: Vector2) -> Dictionary:
-	if track == null or cam == null:
+	if track == null or cam == null or not vp.is_finite():
 		return {}
 	if not _grid_built:
 		_build_pick_grid()
@@ -1257,12 +1395,71 @@ func _pick_triangle(vp: Vector2) -> Dictionary:
 		"normal": (tri3[1] - tri3[0]).cross(tri3[2] - tri3[0]).normalized()}
 
 
-## First visible triangle along an arbitrary ray (used by Snap to ground).
+## Nearest triangle that has been erased, along the ray from a viewport position. A gap
+## cut in this editor knows which surface used to fill it, which is a much better level
+## than anything that can be guessed from the surroundings.
+func _pick_hidden(vp: Vector2) -> Dictionary:
+	if track == null or cam == null or not vp.is_finite():
+		return {}
+	if not _grid_built:
+		_build_pick_grid()
+	var o := cam.project_ray_origin(vp)
+	var d := cam.project_ray_normal(vp).normalized()
+	var best := INF
+	var best_s := -1
+	var best_f := -1
+	var seen := {}
+	var step := CELL * 0.4
+	var t := 0.0
+	while t < 1400.0:
+		var p := o + d * t
+		var key := Vector2i(floori(p.x / CELL), floori(p.z / CELL))
+		if not seen.has(key):
+			seen[key] = true
+			var arr: PackedInt32Array = _cells.get(key, PackedInt32Array())
+			for i in range(0, arr.size(), 2):
+				var si := arr[i]
+				var f := arr[i + 1]
+				if not _is_hidden_face(si, f):
+					continue
+				var tri := _face(si, f)
+				if tri.size() < 3:
+					continue
+				var th := _ray_tri(o, d, tri[0], tri[1], tri[2])
+				if th > 0.0 and th < best:
+					best = th
+					best_s = si
+					best_f = f
+		t += step
+	for i in range(0, _big.size(), 2):
+		var si2 := _big[i]
+		var f2 := _big[i + 1]
+		if not _is_hidden_face(si2, f2):
+			continue
+		var tri2 := _face(si2, f2)
+		if tri2.size() < 3:
+			continue
+		var th2 := _ray_tri(o, d, tri2[0], tri2[1], tri2[2])
+		if th2 > 0.0 and th2 < best:
+			best = th2
+			best_s = si2
+			best_f = f2
+	if best_s < 0:
+		return {}
+	var tri3 := _face(best_s, best_f)
+	var nrm := Vector3.UP
+	if tri3.size() >= 3:
+		nrm = (tri3[1] - tri3[0]).cross(tri3[2] - tri3[0]).normalized()
+	return {"surface": best_s, "face": best_f, "pos": o + d * best, "normal": nrm}
+
+
+## First visible triangle along an arbitrary ray (Snap to ground, fill draping).
 func _raycast(from: Vector3, dir: Vector3, max_t: float) -> Dictionary:
 	if track == null or not _grid_built:
 		return {}
 	var best := INF
 	var best_s := -1
+	var best_f := -1
 	var seen := {}
 	var step := CELL * 0.4
 	var t := 0.0
@@ -1284,6 +1481,7 @@ func _raycast(from: Vector3, dir: Vector3, max_t: float) -> Dictionary:
 				if th > 0.0 and th < best:
 					best = th
 					best_s = si
+					best_f = f
 		t += step
 	for i in range(0, _big.size(), 2):
 		var si2 := _big[i]
@@ -1297,9 +1495,14 @@ func _raycast(from: Vector3, dir: Vector3, max_t: float) -> Dictionary:
 		if th2 > 0.0 and th2 < best:
 			best = th2
 			best_s = si2
+			best_f = f2
 	if best_s < 0:
 		return {}
-	return {"surface": best_s, "pos": from + dir * best}
+	var hit_tri := _face(best_s, best_f)
+	var hit_n := Vector3.UP
+	if hit_tri.size() >= 3:
+		hit_n = (hit_tri[1] - hit_tri[0]).cross(hit_tri[2] - hit_tri[0]).normalized()
+	return {"surface": best_s, "face": best_f, "pos": from + dir * best, "normal": hit_n}
 
 
 ## Prop under the cursor (bounding sphere per prop), or -1.
@@ -1597,7 +1800,7 @@ func _on_preview_input(e: InputEvent) -> void:
 					cam_dist = clampf(cam_dist * 0.5, 4.0, 400.0)
 					_update_camera()
 			elif e.pressed:
-				_start_drag(e.position)
+				_start_drag(e.position, e.shift_pressed)
 			else:
 				_end_drag()
 			preview_holder.accept_event()
@@ -1639,12 +1842,18 @@ func _on_preview_input(e: InputEvent) -> void:
 					else:
 						_brush_hide(hit.pos, brush_radius.value)
 				preview_holder.accept_event()
+			5:
+				_fill_paint(_view_pos(e.position))
+				preview_holder.accept_event()
 			_:
-				_hover_gizmo(_view_pos(e.position))
+				if tool == "edge":
+					_edge_hover_at(_view_pos(e.position))
+				else:
+					_hover_gizmo(_view_pos(e.position))
 				_update_brush_hover(_view_pos(e.position))
 
 
-func _start_drag(p: Vector2) -> void:
+func _start_drag(p: Vector2, shift := false) -> void:
 	preview_holder.grab_focus()
 	var vp := _view_pos(p)
 	_drag = 1
@@ -1669,12 +1878,30 @@ func _start_drag(p: Vector2) -> void:
 			else:
 				_delete_part(hp)
 		"fill":
+			_begin_fill(vp)
+		"hole":
 			_drag = 0
-			var hf := _pick_triangle(vp)
-			if hf.is_empty():
-				status("Click the course to fill a patch there.")
+			_fill_hole_at(vp)
+		"edge":
+			_drag = 0
+			var he := _edge_pick(vp)
+			if he.is_empty():
+				status("Edge fill: point at a gap - click its rim edge, or its empty middle, to take the outline.")
+			elif shift or bool(he.get("gap", false)):
+				var added := edge_grow(he)
+				_edge_redraw()
+				_edge_rim_redraw(_edge_hover_cache)
+				_edge_refresh()
+				if added == 0:
+					status("That rim is already selected - press Fill edges (Enter) to close it.")
+				elif shift:
+					status("Shift+click took %d rim edges around the gap - %d selected." % [added, edge_sel.size()])
+				else:
+					status("Clicked into the gap: took its whole %d-edge rim - press Fill edges (Enter)." % added)
 			else:
-				_make_patch(hf)
+				_edge_toggle(he)
+				edge_hover = {}
+				_edge_hover_redraw()
 		"erase", "restore":
 			_drag = 4
 			_stroke_dirty = false
@@ -1703,12 +1930,15 @@ func _end_drag() -> void:
 		_refresh_selection_ui()
 	elif _drag == 4:
 		if _stroke_dirty and track != null:
+			_edge_hover_dirty = true
 			track.apply_decor(decor)
 			_refresh_surface_list()
 			_refresh_selection_ui()
 			_update_gizmo()
 			_commit()
 			status("%d erased triangles, %d patches." % [_hidden_face_count(), _patch_count()])
+	elif _drag == 5:
+		_fill_commit()
 	_drag = 0
 	gizmo_drag = -1
 	_update_gizmo_colors()
@@ -1885,6 +2115,7 @@ func _delete_part(hit: Dictionary) -> void:
 		if not list.has(ff):
 			list.append(ff)
 	decor["hidden"] = hid
+	_edge_hover_dirty = true
 	track.apply_decor(decor)
 	_refresh_surface_list()
 	_refresh_selection_ui()
@@ -1893,72 +2124,577 @@ func _delete_part(hit: Dictionary) -> void:
 	status("Deleted a connected piece of %d triangles (%d erased in total)." % [part.size(), _hidden_face_count()])
 
 
-## Lays a flat patch over the clicked triangle. It copies that triangle's texture and
-## UV mapping, so it blends into the course, and sits just above the surface. Patches
-## are stored under decor "patches" and built by Track (mesh + collision).
-func _make_patch(hit: Dictionary) -> void:
-	var si := int(hit.surface)
-	var f := int(hit.face)
+## Fill: paint a sheet of ground over a gap, a hole or a seam. The level comes from the
+## triangle under the cursor; over a hole from the terrain nearest the cursor on screen;
+## and with nothing nearby the last fill's level is reused, so an edge can be painted
+## with no geometry under it. One stroke is one patch, and painting over an earlier fill
+## extends that patch, so two coplanar sheets never fight for the same pixels.
+func _begin_fill(vp: Vector2) -> void:
+	if track == null or cam == null:
+		return
+	if not _fill_plane_at(vp):
+		status("Fill: no surface in view to take a level from - orbit until the area around the gap is on screen.")
+		return
+	_drag = 5
+	_fill_cover = cover_solid != null and cover_solid.button_pressed
+	_fill_cells.clear()
+	_fill_seen.clear()
+	_fill_keys.clear()
+	_fill_last = Vector2.INF
+	_fill_full = false
+	_fill_note = ""
+	_ensure_fill_preview()
+	_fill_paint(vp)
+
+
+## Takes the fill level for this stamp. False means there is no surface to take it from.
+## Order: the surface under the cursor, then what this editor erased there (a gap it cut
+## itself knows exactly which surface used to be in it), then the surface around the
+## cursor, then the last level used.
+func _fill_plane_at(vp: Vector2) -> bool:
+	var hit := _pick_triangle(vp)
+	if hit.is_empty():
+		hit = _pick_hidden(vp)
+	if hit.is_empty():
+		hit = _fill_nearby_hit(vp)
+	if not hit.is_empty():
+		return _fill_set_level(hit)
+	return _fill_ok and not _fill_seed.is_empty()
+
+
+## Surface to continue when the cursor is over empty space. Rays are marched outward
+## from the cursor in 12 directions until they leave the view, and the hits are grouped
+## by plane: the plane that surrounds the cursor on the most sides wins (ties go to the
+## nearest). A gap in a wall therefore takes the wall's plane - not the ground far below,
+## not whatever is visible through the gap - and the march reaches the rim of a big hole
+## instead of giving up next to the cursor. The nearest hit of that plane is the seed.
+func _fill_nearby_hit(vp: Vector2) -> Dictionary:
+	if cam == null:
+		return {}
+	var eye := cam.global_position
+	var limit := maxf(viewport.size.x, viewport.size.y) * 0.6
+	var dirs := 12
+	var clusters: Array = []
+	for i in dirs:
+		var ang := TAU * float(i) / float(dirs)
+		var dir := Vector2(cos(ang), sin(ang))
+		var r := 8.0
+		while r <= limit:
+			var at: Vector2 = vp + dir * r
+			var hit := _pick_triangle(at)
+			if not hit.is_empty():
+				var pos := Vector3(hit.pos)
+				var n := Vector3(hit.normal)
+				if (eye - pos).dot(n) < 0.0:
+					n = -n
+				var d := n.dot(pos)
+				var depth := eye.distance_to(pos)
+				var joined := false
+				for cl in clusters:
+					if Vector3(cl.n).dot(n) > 0.995 and absf(float(cl.d) - d) < 0.15:
+						cl.count = int(cl.count) + 1
+						if depth < float(cl.depth):
+							cl.depth = depth
+							cl.hit = hit
+						joined = true
+						break
+				if not joined:
+					clusters.append({"n": n, "d": d, "count": 1, "depth": depth, "hit": hit})
+				break       # this direction found its surface; next direction
+			r += 12.0
+	var best: Dictionary = {}
+	for cl in clusters:
+		if best.is_empty() or int(cl.count) > int(best.count) \
+				or (int(cl.count) == int(best.count) and float(cl.depth) < float(best.depth)):
+			best = cl
+	return best.get("hit", {})
+
+
+## Level for the stroke: a plane through the picked triangle, plus its UV mapping, so a
+## fill keeps the same texel density and blends into the course.
+func _fill_set_level(hit: Dictionary) -> bool:
+	if track == null:
+		return false
+	var si := int(hit.get("surface", -1))
+	var f := int(hit.get("face", -1))
 	var g: Dictionary = track.surface_geo.get(si, {})
-	if g.is_empty():
-		return
-	var pos: PackedVector3Array = g.pos
-	var idx: PackedInt32Array = g.idx
-	var uvs: PackedVector2Array = g.get("uv", PackedVector2Array())
-	if f * 3 + 2 >= idx.size():
-		return
-	var ia := idx[f * 3]
-	var ib := idx[f * 3 + 1]
-	var ic := idx[f * 3 + 2]
-	var a := pos[ia]
-	var b := pos[ib]
-	var c := pos[ic]
-	var ua := uvs[ia] if ia < uvs.size() else Vector2.ZERO
-	var ub := uvs[ib] if ib < uvs.size() else Vector2.ZERO
-	var uc := uvs[ic] if ic < uvs.size() else Vector2.ZERO
+	var tri := _face(si, f)
+	if g.is_empty() or tri.size() < 3:
+		return false
+	var a: Vector3 = tri[0]
+	var b: Vector3 = tri[1]
+	var c: Vector3 = tri[2]
 	var n := (b - a).cross(c - a).normalized()
-	var u := (b - a).normalized()
+	if n.length_squared() < 0.5:
+		return false
+	# The sheet has to sit on the side being looked at: on a wall or a ceiling the
+	# triangle's own winding may face into the solid, which would bury the fill.
+	if cam != null and (cam.global_position - a).dot(n) < 0.0:
+		n = -n
+	var u := b - a
 	u = u - n * u.dot(n)
 	if u.length_squared() < 1e-6:
-		u = Vector3.RIGHT
+		u = Vector3.RIGHT - n * n.x
 	u = u.normalized()
-	var v := n.cross(u)
-	var r := maxf(brush_radius.value, 0.25)
-	var base: Vector3 = hit.pos
-	var corners := [base - u * r - v * r, base + u * r - v * r, base + u * r + v * r, base - u * r + v * r]
-	var verts: Array = []
-	var tuv: Array = []
-	for p in corners:
-		var q: Vector3 = p + n * 0.06
-		verts.append([_r(q.x), _r(q.y), _r(q.z)])
-		var t := _bary_uv(p, a, b, c, ua, ub, uc)
-		tuv.append([_r(t.x, 0.0001), _r(t.y, 0.0001)])
-	var texture := String(g.get("texture", ""))
+	var uvs := _tri_uv(si, f)
+	_fill_seed = {"a": a, "b": b, "c": c, "ua": uvs[0], "ub": uvs[1], "uc": uvs[2]}
+	_fill_origin = a
+	_fill_normal = n
+	_fill_u = u
+	_fill_v = n.cross(u)
+	_fill_plane = Plane(n, n.dot(a))
+	_fill_ok = true
+	_fill_texture = String(g.get("texture", ""))
 	if patch_pick != null and patch_pick.selected >= 0:
 		var chosen := String(patch_pick.get_item_metadata(patch_pick.selected))
 		if chosen != "":
-			texture = chosen
-	if texture.begins_with("conn"):
+			_fill_texture = chosen
+	if _fill_texture.begins_with("conn"):
 		# Connector surfaces use a blend shader; a patch takes the connector's far texture.
 		var conns: Dictionary = track.data.get("connectors", {})
-		texture = String((conns.get(texture, {}) as Dictionary).get("b", ""))
+		_fill_texture = String((conns.get(_fill_texture, {}) as Dictionary).get("b", ""))
+	_fill_alpha = bool(g.get("alpha", false))
+	# A fill over the road keeps road grip; everything else is drivable off-road.
+	_fill_class = "road" if String(g.get("class", "off")) == "road" else "off"
+	_fill_cell = clampf(brush_radius.value / 5.0, 0.35, 2.0)
+	return true
+
+
+func _tri_uv(si: int, f: int) -> Array:
+	var g: Dictionary = track.surface_geo.get(si, {})
+	if g.is_empty() or f < 0:
+		return [Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]
+	var idx: PackedInt32Array = g.idx
+	var uvs: PackedVector2Array = g.get("uv", PackedVector2Array())
+	var out: Array = []
+	for k in 3:
+		if f * 3 + k >= idx.size():
+			out.append(Vector2.ZERO)
+			continue
+		var vi := idx[f * 3 + k]
+		out.append(uvs[vi] if vi < uvs.size() else Vector2.ZERO)
+	return out
+
+
+## Paints the brush at a viewport position. It stamps cells, not triangles: empty space
+## has no triangle and must fill just as well.
+func _fill_paint(vp: Vector2) -> void:
+	if not _fill_ok or cam == null:
+		return
+	var d := cam.project_ray_normal(vp).normalized()
+	# Looking almost along the plane would throw the stamp kilometres away.
+	if absf(d.dot(_fill_normal)) < 0.05:
+		return
+	var p: Variant = _fill_plane.intersects_ray(cam.project_ray_origin(vp), d)
+	if p == null:
+		return
+	_show_brush(Vector3(p), _fill_normal)
+	_fill_stamp_world(Vector3(p))
+
+
+## Hole: closes the whole empty region under the cursor, bounded by the surface around it
+## - the outline of the gap rather than a brush stroke. Fill (5) still paints freely, so
+## long tears can be closed in one click and odd shapes can be brushed by hand.
+func _fill_hole_at(vp: Vector2) -> void:
+	if track == null or cam == null:
+		return
+	_fill_cover = false          # a hole is only ever closed over empty space
+	if not _fill_plane_at(vp):
+		status("Hole: no surface in view to take a level from - orbit so the area around the gap is on screen.")
+		return
+	# A hole is filled as a whole, so keep the cells coarse enough that a long tear does
+	# not become tens of thousands of quads.
+	_fill_cell = maxf(_fill_cell, 0.5)
+	var d := cam.project_ray_normal(vp).normalized()
+	if absf(d.dot(_fill_normal)) < 0.05:
+		status("Hole: you are looking almost straight along that level - orbit a little and click again.")
+		return
+	var p: Variant = _fill_plane.intersects_ray(cam.project_ray_origin(vp), d)
+	if p == null:
+		status("Hole: the cursor does not land on that level - click the gap again.")
+		return
+	var start := _fill_cell_of(Vector3(p))
+	if _fill_covered(_fill_cell_point(start)):
+		status("Hole: that spot is solid - click inside the gap.")
+		return
+	var first := _fill_flood(start, MAX_HOLE_CELLS, MAX_HOLE_SPAN)
+	var region: Dictionary = first.cells
+	_fill_note = ""
+	if bool(first.escaped):
+		# Open gap (a break in a narrow path is open along its sides): keep what lies
+		# between the ends of the surface instead of flooding the void beside it.
+		# The cap covers the whole 25 x 25 cell box, so the walk sees every rim in it.
+		var tight := _fill_flood(start, 700, 12)
+		region = _fill_connected(_fill_corridor(tight.cells, tight.rim, FILL_HOLE_REACH), start)
+		if not region.is_empty():
+			_fill_note = "It is open on a side, so only the strip between its edges was filled."
+	if region.is_empty():
+		# No closed outline to follow: fill one brush stamp under the cursor, so a click
+		# always does something visible instead of failing without a trace.
+		_fill_cells.clear()
+		_fill_seen.clear()
+		_fill_keys.clear()
+		_fill_last = Vector2.INF
+		_fill_stamp_world(Vector3(p))
+		_fill_note = "No closed outline here, so one brush stamp was filled instead."
+		_fill_commit()
+		return
+	_fill_cells = region
+	_fill_keys.clear()
+	_fill_commit()
+
+
+## Walks the empty cells out from `start`, stopping at the surface around it. `rim` is the
+## covered cells that bounded the walk; `escaped` means it ran into a cap or its span,
+## i.e. the gap is not closed.
+func _fill_flood(start: Vector2i, cap: int, span: int) -> Dictionary:
+	var cells := {}
+	var rim := {}
+	var seen := {start: true}
+	var queue: Array[Vector2i] = [start]
+	var escaped := false
+	while not queue.is_empty():
+		var key: Vector2i = queue.pop_back()
+		if _fill_near(_fill_cell_point(key), FILL_HOLE_BAND):
+			rim[key] = true
+			continue
+		cells[key] = true
+		if cells.size() > cap:
+			escaped = true
+			break
+		for dv in FILL_NEIGHBOURS:
+			var step: Vector2i = dv
+			var nk := key + step
+			if seen.has(nk):
+				continue
+			if absi(nk.x - start.x) > span or absi(nk.y - start.y) > span:
+				escaped = true
+				continue
+			seen[nk] = true
+			queue.append(nk)
+	return {"cells": cells, "rim": rim, "escaped": escaped}
+
+
+## Keeps only cells that sit between two sides of the surface: a break in a narrow path
+## has geometry within a few cells on both sides of one axis, the void beside the path
+## does not. This is what turns an open gap into the strip across it.
+func _fill_corridor(cells: Dictionary, rim: Dictionary, reach: int) -> Dictionary:
+	if cells.is_empty() or rim.is_empty():
+		return {}
+	var out := {}
+	for kv in cells:
+		var k: Vector2i = kv
+		var across := _rim_within(rim, k, Vector2i(1, 0), reach) \
+			and _rim_within(rim, k, Vector2i(-1, 0), reach)
+		var along := _rim_within(rim, k, Vector2i(0, 1), reach) \
+			and _rim_within(rim, k, Vector2i(0, -1), reach)
+		if across or along:
+			out[k] = true
+	return out
+
+
+func _rim_within(rim: Dictionary, from: Vector2i, dir: Vector2i, reach: int) -> bool:
+	for i in range(1, reach + 1):
+		if rim.has(from + dir * i):
+			return true
+	return false
+
+
+## Keeps the part of `cells` reachable from `start`, so a clipped gap cannot leave
+## detached islands floating around.
+func _fill_connected(cells: Dictionary, start: Vector2i) -> Dictionary:
+	if not cells.has(start):
+		return {}
+	var out := {start: true}
+	var queue: Array[Vector2i] = [start]
+	while not queue.is_empty():
+		var key: Vector2i = queue.pop_back()
+		for dv in FILL_NEIGHBOURS:
+			var step: Vector2i = dv
+			var nk := key + step
+			if cells.has(nk) and not out.has(nk):
+				out[nk] = true
+				queue.append(nk)
+	return out
+
+
+## Cell of a point on the fill plane.
+func _fill_cell_of(p: Vector3) -> Vector2i:
+	var local := p - _fill_origin
+	return Vector2i(floori(local.dot(_fill_u) / _fill_cell), floori(local.dot(_fill_v) / _fill_cell))
+
+
+## Stamps at a world point on the fill plane, painting a band between samples so a fast
+## drag leaves no gaps.
+func _fill_stamp_world(p: Vector3) -> void:
+	var local := p - _fill_origin
+	var c := Vector2(local.dot(_fill_u), local.dot(_fill_v)) / _fill_cell
+	if _fill_last.is_finite():
+		# Capped so a grazing drag across a wall cannot turn into thousands of stamps.
+		var steps := clampi(ceili(c.distance_to(_fill_last) / 0.45), 1, 512)
+		for i in range(1, steps + 1):
+			_fill_stamp(_fill_last.lerp(c, float(i) / float(steps)))
+	else:
+		_fill_stamp(c)
+	_fill_last = c
+
+
+func _fill_stamp(c: Vector2) -> void:
+	var r := maxf(brush_radius.value, 0.25) / _fill_cell
+	var x0 := floori(c.x - r)
+	var x1 := floori(c.x + r)
+	var y0 := floori(c.y - r)
+	var y1 := floori(c.y + r)
+	for cy in range(y0, y1 + 1):
+		for cx in range(x0, x1 + 1):
+			if Vector2(cx + 0.5, cy + 0.5).distance_to(c) > r:
+				continue
+			var key := Vector2i(cx, cy)
+			if _fill_cells.has(key) or _fill_seen.has(key):
+				continue
+			_fill_seen[key] = true
+			# Fill only empty space: a cell that already has geometry on the level is
+			# left alone, so the sheet closes gaps instead of lying over the surface.
+			if _fill_covered(_fill_cell_point(key)):
+				continue
+			if _fill_keys.size() >= MAX_FILL_CELLS:
+				if not _fill_full:
+					_fill_full = true
+					status("Fill stroke is full (%d cells) - release, then paint the rest." % MAX_FILL_CELLS)
+				return
+			_fill_cells[key] = true
+			_fill_keys.append(key)
+			_fill_preview_cell(key, _fill_keys.size() - 1)
+	if fill_preview != null and fill_preview.multimesh != null:
+		fill_preview.multimesh.visible_instance_count = _fill_keys.size()
+
+
+## Centre of a painted cell, on the fill plane.
+func _fill_cell_point(key: Vector2i) -> Vector3:
+	return _fill_origin + _fill_u * (float(key.x) + 0.5) * _fill_cell \
+		+ _fill_v * (float(key.y) + 0.5) * _fill_cell
+
+
+## Is there a surface within `band` metres of this point on the level? Only surfaces
+## roughly parallel to the level count, so a skirt or a wall inside a gap does not.
+func _fill_near(wp: Vector3, band: float) -> bool:
+	var hit := _raycast(wp + _fill_normal * band, -_fill_normal, band * 2.0)
+	if hit.is_empty():
+		return false
+	if absf(_vec_of(hit.get("normal", Vector3.ZERO)).dot(_fill_normal)) < 0.45:
+		return false
+	return absf((Vector3(hit.pos) - wp).dot(_fill_normal)) <= band
+
+
+## Does this point on the level already have a surface on it? Then the brush leaves the
+## cell alone: Fill only paints empty space, never over geometry that is already there -
+## unless Cover existing is ticked, for a strip that is a surface rather than a hole.
+func _fill_covered(wp: Vector3) -> bool:
+	if _fill_cover:
+		return false
+	return _fill_near(wp, FILL_BAND)
+
+
+func _ensure_fill_preview() -> void:
+	if fill_preview != null and is_instance_valid(fill_preview):
+		return
+	var quad := QuadMesh.new()
+	quad.size = Vector2.ONE
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = quad
+	mm.instance_count = MAX_FILL_CELLS
+	mm.visible_instance_count = 0
+	fill_preview = MultiMeshInstance3D.new()
+	fill_preview.multimesh = mm
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(0.35, 0.95, 0.7, 0.4)
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	fill_preview.material_override = m
+	fill_preview.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	preview_root.add_child(fill_preview)
+
+
+## Shows a painted cell while the stroke is still going, so coverage is visible live.
+func _fill_preview_cell(key: Vector2i, i: int) -> void:
+	if fill_preview == null or fill_preview.multimesh == null:
+		return
+	var basis := Basis(_fill_u * _fill_cell, _fill_v * _fill_cell, _fill_normal * _fill_cell)
+	fill_preview.multimesh.set_instance_transform(i,
+		Transform3D(basis, _fill_cell_point(key) + _fill_normal * (FILL_LIFT + 0.02)))
+
+
+func _fill_clear_preview() -> void:
+	if fill_preview != null and fill_preview.multimesh != null:
+		fill_preview.multimesh.visible_instance_count = 0
+
+
+func _fill_commit() -> void:
+	_fill_clear_preview()
+	if track == null:
+		return
+	if _fill_cells.is_empty():
+		status("Fill: nothing empty under the brush - it only closes gaps and holes.")
+		_fill_note = ""
+		return
 	var patches: Variant = decor.get("patches", [])
 	if not (patches is Array):
 		patches = []
-	# A patch over the road keeps road grip; everything else is drivable off-road.
-	var cls := "road" if String(g.get("class", "off")) == "road" else "off"
-	patches.append({
-		"texture": texture, "alpha": bool(g.get("alpha", false)), "class": cls,
-		"nrm": [_r(n.x, 0.0001), _r(n.y, 0.0001), _r(n.z, 0.0001)],
-		"verts": verts, "uv": tuv, "idx": [0, 1, 2, 0, 2, 3],
-	})
+	var cells := _fill_cells
+	var index := _fill_merge_index(patches)
+	if index >= 0:
+		# Painting over an earlier fill on the same plane extends that patch: one sheet,
+		# never two coplanar quads fighting for the same pixels.
+		var old: Dictionary = patches[index]
+		var merged := {}
+		for cell in (old.get("cells", []) as Array):
+			var key: Variant = _fill_remap_cell(old.get("grid", {}), cell)
+			if key != null:
+				merged[key] = true
+		for k in cells:
+			merged[k] = true
+		if merged.size() <= MAX_PATCH_CELLS:
+			patches[index] = _fill_patch(merged)
+			cells = merged
+		else:
+			status("That fill patch is already full - starting a new one.")
+			index = -1
+	if index < 0:
+		patches.append(_fill_patch(cells))
 	decor["patches"] = patches
+	_edge_hover_dirty = true
 	track.apply_decor(decor)
 	_refresh_surface_list()
 	_refresh_selection_ui()
 	_update_gizmo()
 	_commit()
-	status("Filled a %.1f m patch with %s." % [r * 2.0, texture if texture != "" else "a flat colour"])
+	var msg := "Filled %d cell(s) (%.1f m2) with %s." % [cells.size(),
+		float(cells.size()) * _fill_cell * _fill_cell,
+		_fill_texture if _fill_texture != "" else "a flat colour"]
+	if _fill_note != "":
+		msg += " " + _fill_note
+		_fill_note = ""
+	status(msg)
+
+
+## Index of an existing patch on this stroke's plane and texture, or -1. Only patches
+## written by this brush carry a grid, so older ones are left alone.
+func _fill_merge_index(patches: Array) -> int:
+	for i in patches.size():
+		var p: Variant = patches[i]
+		if not (p is Dictionary):
+			continue
+		var d: Dictionary = p
+		if String(d.get("texture", "")) != _fill_texture:
+			continue
+		if String(d.get("class", "off")) != _fill_class or bool(d.get("alpha", false)) != _fill_alpha:
+			continue
+		var g: Variant = d.get("grid")
+		if not (g is Dictionary) or not (d.get("cells") is Array):
+			continue
+		var n := _vec_of((g as Dictionary).get("n", [])).normalized()
+		var org := _vec_of((g as Dictionary).get("org", []))
+		if n.dot(_fill_normal) < 0.999:
+			continue
+		if absf((org - _fill_origin).dot(_fill_normal)) > 0.05:
+			continue
+		return i
+	return -1
+
+
+## Re-maps a cell of an existing patch into this stroke's grid: they share the plane but
+## not necessarily the origin, so the cell is moved by world position.
+func _fill_remap_cell(grid: Variant, cell: Variant) -> Variant:
+	if not (grid is Dictionary) or not (cell is Array) or (cell as Array).size() < 2:
+		return null
+	var g: Dictionary = grid
+	var org := _vec_of(g.get("org", []))
+	var u := _vec_of(g.get("u", [])).normalized()
+	var v := _vec_of(g.get("v", [])).normalized()
+	var sz := float(g.get("cell", _fill_cell))
+	if sz <= 0.001 or u.length_squared() < 0.5 or v.length_squared() < 0.5:
+		return null
+	var c: Array = cell
+	var wp := org + u * (float(c[0]) * sz) + v * (float(c[1]) * sz)
+	var local := wp - _fill_origin
+	return Vector2i(roundi(local.dot(_fill_u) / _fill_cell), roundi(local.dot(_fill_v) / _fill_cell))
+
+
+## A patch dict out of painted cells: shared corners (no overlapping quads), draped on
+## the geometry under it, lifted a few centimetres so nothing z-fights, and with the
+## grid kept so a later stroke can extend it.
+func _fill_patch(cells: Dictionary) -> Dictionary:
+	var a: Vector3 = _fill_seed.get("a", _fill_origin)
+	var b: Vector3 = _fill_seed.get("b", _fill_origin)
+	var c: Vector3 = _fill_seed.get("c", _fill_origin)
+	var ua: Vector2 = _fill_seed.get("ua", Vector2.ZERO)
+	var ub: Vector2 = _fill_seed.get("ub", Vector2.ZERO)
+	var uc: Vector2 = _fill_seed.get("uc", Vector2.ZERO)
+	var corner := {}
+	var verts: Array = []
+	var uvs: Array = []
+	var idx: Array = []
+	for kv in cells:
+		var k: Vector2i = kv
+		var ids := []
+		for cv in FILL_CORNERS:
+			var o: Vector2i = cv
+			var key := Vector2i(k.x + o.x, k.y + o.y)
+			var vid := int(corner.get(key, -1))
+			if vid < 0:
+				vid = verts.size()
+				corner[key] = vid
+				var wp := _fill_origin + _fill_u * (float(key.x) * _fill_cell) \
+					+ _fill_v * (float(key.y) * _fill_cell)
+				var q := _fill_drape(wp)
+				verts.append([_r(q.x), _r(q.y), _r(q.z)])
+				var t := _bary_uv(wp, a, b, c, ua, ub, uc)
+				uvs.append([_r(t.x, 0.0001), _r(t.y, 0.0001)])
+			ids.append(vid)
+		idx.append_array([ids[0], ids[1], ids[2], ids[0], ids[2], ids[3]])
+	var out_cells: Array = []
+	for kv in cells:
+		var k: Vector2i = kv
+		out_cells.append([k.x, k.y])
+	return {
+		"texture": _fill_texture, "alpha": _fill_alpha, "class": _fill_class,
+		"nrm": [_r(_fill_normal.x, 0.0001), _r(_fill_normal.y, 0.0001), _r(_fill_normal.z, 0.0001)],
+		"verts": verts, "uv": uvs, "idx": idx,
+		"grid": {
+			"org": [_r(_fill_origin.x), _r(_fill_origin.y), _r(_fill_origin.z)],
+			"u": [_r(_fill_u.x, 0.0001), _r(_fill_u.y, 0.0001), _r(_fill_u.z, 0.0001)],
+			"v": [_r(_fill_v.x, 0.0001), _r(_fill_v.y, 0.0001), _r(_fill_v.z, 0.0001)],
+			"n": [_r(_fill_normal.x, 0.0001), _r(_fill_normal.y, 0.0001), _r(_fill_normal.z, 0.0001)],
+			"cell": _r(_fill_cell, 0.0001),
+		},
+		"cells": out_cells,
+	}
+
+
+## Follows the geometry under a sheet corner (a sloped verge, a step) instead of poking
+## through it; with nothing underneath the corner stays on the plane, closing the hole.
+## Only geometry close to the plane counts: on a wall a long probe would reach whatever
+## is behind the gap and drag the sheet off the wall.
+func _fill_drape(wp: Vector3) -> Vector3:
+	var hit := _raycast(wp + _fill_normal * FILL_CONFORM, -_fill_normal, FILL_CONFORM * 2.0)
+	if not hit.is_empty():
+		var hn := _vec_of(hit.get("normal", _fill_normal))
+		if absf(hn.dot(_fill_normal)) > 0.45:
+			var off: float = (Vector3(hit.pos) - wp).dot(_fill_normal)
+			if absf(off) <= FILL_CONFORM:
+				return Vector3(hit.pos) + _fill_normal * FILL_LIFT
+	return wp + _fill_normal * FILL_LIFT
+
+
+static func _vec_of(v: Variant) -> Vector3:
+	if v is Vector3:
+		return v
+	if v is Array and (v as Array).size() >= 3:
+		var arr: Array = v
+		return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))
+	return Vector3.ZERO
 
 
 ## Affine UV at `p` for the plane of triangle (a, b, c) - extends outside the triangle.
@@ -1978,6 +2714,1049 @@ static func _bary_uv(p: Vector3, a: Vector3, b: Vector3, c: Vector3,
 	var vv := (d11 * d20 - d01 * d21) / den
 	var ww := (d00 * d21 - d01 * d20) / den
 	return ua * (1.0 - vv - ww) + ub * vv + uc * ww
+
+
+# --- edge fill -------------------------------------------------------------------------
+## Edge fill does not guess the hole from a brush or a flood fill: the rim is picked edge
+## by edge, and those very vertices become the outline of the new surface. So the patch
+## is watertight with the course, its texture and UV mapping are taken from the face the
+## rim belongs to, and the triangle count comes from the neighbour's own edge length.
+
+func _line_mesh() -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = ImmediateMesh.new()
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.vertex_color_use_as_albedo = true
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.no_depth_test = true
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	preview_root.add_child(mi)
+	return mi
+
+
+static func _cross2(a: Vector2, b: Vector2) -> float:
+	return a.x * b.y - a.y * b.x
+
+
+static func _seg2_dist(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var ab := b - a
+	var l2 := ab.length_squared()
+	if l2 < 0.000001:
+		return p.distance_to(a)
+	var t := clampf((p - a).dot(ab) / l2, 0.0, 1.0)
+	return p.distance_to(a + ab * t)
+
+
+static func _edge_key(p: Vector3) -> Vector3i:
+	return Vector3i(roundi(p.x * 100.0), roundi(p.y * 100.0), roundi(p.z * 100.0))
+
+
+static func _edge_pair_key(a: Vector3i, b: Vector3i) -> String:
+	var sa := "%d,%d,%d" % [a.x, a.y, a.z]
+	var sb := "%d,%d,%d" % [b.x, b.y, b.z]
+	return sa + "|" + sb if sa < sb else sb + "|" + sa
+
+
+static func _newell_normal(pts: Array) -> Vector3:
+	var n := Vector3.ZERO
+	for i in pts.size():
+		var a: Vector3 = pts[i]
+		var b: Vector3 = pts[(i + 1) % pts.size()]
+		n += Vector3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x),
+			(a.x - b.x) * (a.y + b.y))
+	return n
+
+
+static func _to_2d(p: Vector3, plane: Dictionary) -> Vector2:
+	var d := p - Vector3(plane["c"])
+	return Vector2(d.dot(Vector3(plane["u"])), d.dot(Vector3(plane["v"])))
+
+
+static func _poly_area(poly: PackedVector2Array) -> float:
+	var s := 0.0
+	for i in poly.size():
+		var a := poly[i]
+		var b := poly[(i + 1) % poly.size()]
+		s += a.x * b.y - b.x * a.y
+	return s * 0.5
+
+
+static func _point_in_tri(p: Vector2, a: Vector2, b: Vector2, c: Vector2) -> bool:
+	var d1 := _cross2(b - a, p - a)
+	var d2 := _cross2(c - b, p - b)
+	var d3 := _cross2(a - c, p - c)
+	return d1 >= -1e-9 and d2 >= -1e-9 and d3 >= -1e-9
+
+
+## Ear clipping for a simple polygon in the fill plane. Returns index triples (CCW), or []
+## for a self-intersecting or degenerate outline - better to say so than to build a mess.
+static func _triangulate(poly: PackedVector2Array) -> Array:
+	var n := poly.size()
+	if n < 3:
+		return []
+	var idx: Array = []
+	for i in n:
+		idx.append(i)
+	if _poly_area(poly) < 0.0:
+		idx.reverse()
+	var out: Array = []
+	var guard := 0
+	while idx.size() > 3 and guard < 10000:
+		guard += 1
+		var clipped := false
+		for i in idx.size():
+			var i0: int = idx[(i + idx.size() - 1) % idx.size()]
+			var i1: int = idx[i]
+			var i2: int = idx[(i + 1) % idx.size()]
+			var a := poly[i0]
+			var b := poly[i1]
+			var c := poly[i2]
+			if _cross2(b - a, c - a) <= 1e-9:
+				continue
+			var blocked := false
+			for j in idx.size():
+				var p: int = idx[j]
+				if p == i0 or p == i1 or p == i2:
+					continue
+				if _point_in_tri(poly[p], a, b, c):
+					blocked = true
+					break
+			if blocked:
+				continue
+			out.append(Vector3i(i0, i1, i2))
+			idx.remove_at(i)
+			clipped = true
+			break
+		if not clipped:
+			return []
+	if idx.size() == 3:
+		out.append(Vector3i(idx[0], idx[1], idx[2]))
+	return out
+
+
+## Row samples along a rim, by arc length, so two rims of different length can be lofted.
+static func _edge_samples(pts: Array, steps: int) -> Array:
+	var out: Array = []
+	var n := pts.size()
+	if n == 0:
+		return out
+	if n == 1:
+		for i in steps + 1:
+			out.append(Vector3(pts[0]))
+		return out
+	var lens: Array = [0.0]
+	var total := 0.0
+	for i in range(1, n):
+		total += Vector3(pts[i - 1]).distance_to(Vector3(pts[i]))
+		lens.append(total)
+	if total < 1e-6:
+		for i in steps + 1:
+			out.append(Vector3(pts[0]))
+		return out
+	var seg := 0
+	for i in steps + 1:
+		var want := total * float(i) / float(steps)
+		while seg < n - 2 and float(lens[seg + 1]) < want:
+			seg += 1
+		var l0 := float(lens[seg])
+		var l1 := float(lens[seg + 1])
+		var t := clampf((want - l0) / maxf(l1 - l0, 1e-6), 0.0, 1.0)
+		out.append(Vector3(pts[seg]).lerp(Vector3(pts[seg + 1]), t))
+	return out
+
+
+## Lofts one rim to the other (a gap between two wall pieces, a tear with both sides
+## selected). The rows are sampled to the same step count and paired end to end, so the
+## strip cannot twist.
+static func _edge_bridge_rows(pa: Array, pb: Array, steps: int) -> Dictionary:
+	var a0: Vector3 = pa[0]
+	var a1: Vector3 = pa[pa.size() - 1]
+	var b0: Vector3 = pb[0]
+	var b1: Vector3 = pb[pb.size() - 1]
+	var straight := a0.distance_to(b0) + a1.distance_to(b1)
+	var crossed := a0.distance_to(b1) + a1.distance_to(b0)
+	var bs: Array = pb.duplicate()
+	if crossed < straight:
+		bs.reverse()
+	var va := _edge_samples(pa, steps)
+	var vb := _edge_samples(bs, steps)
+	var verts: Array = []
+	verts.append_array(va)
+	verts.append_array(vb)
+	var row := steps + 1
+	var tris: Array = []
+	for i in steps:
+		var a := i
+		var b := i + 1
+		var c := row + i + 1
+		var d := row + i
+		tris.append(Vector3i(a, b, c))
+		tris.append(Vector3i(a, c, d))
+	return {"verts": verts, "tris": tris}
+
+
+## Makes every triangle face the plane's normal (the side being looked at), and drops the
+## degenerate ones the outline may produce.
+static func _edge_orient(verts: Array, tris: Array, plane: Dictionary) -> Array:
+	var out: Array = []
+	for t in tris:
+		var a := _to_2d(Vector3(verts[t.x]), plane)
+		var b := _to_2d(Vector3(verts[t.y]), plane)
+		var c := _to_2d(Vector3(verts[t.z]), plane)
+		var area := _cross2(b - a, c - a)
+		if absf(area) < 1e-10:
+			continue
+		out.append(t if area > 0.0 else Vector3i(t.x, t.z, t.y))
+	return out
+
+
+static func _edge_unique(pts: Array) -> Array:
+	var out: Array = []
+	var seen := {}
+	for p in pts:
+		var key := _edge_key(Vector3(p))
+		if seen.has(key):
+			continue
+		seen[key] = true
+		out.append(Vector3(p))
+	return out
+
+
+func _edge_mid(verts: Array, mids: Dictionary, i: int, j: int, a: Vector3, b: Vector3) -> int:
+	var key := Vector2i(mini(i, j), maxi(i, j))
+	if mids.has(key):
+		return int(mids[key])
+	var id := verts.size()
+	verts.append((a + b) * 0.5)
+	mids[key] = id
+	return id
+
+
+## Splits triangles until their longest edge is about the size of the triangles beside the
+## rim - the point of "matching the tris": the fill has the course's own density instead
+## of one huge slab. Capped so a coarse neighbour cannot explode the patch.
+func _edge_subdivide(verts: Array, tris: Array, target: float) -> Array:
+	if target <= 0.001:
+		return tris
+	var out := tris
+	var depth := 0
+	while depth < MAX_EDGE_SUBDIV and out.size() < MAX_EDGE_TRIS:
+		var next: Array = []
+		var mids := {}
+		var changed := false
+		for t in out:
+			var a: Vector3 = verts[t.x]
+			var b: Vector3 = verts[t.y]
+			var c: Vector3 = verts[t.z]
+			var longest := maxf(a.distance_to(b), maxf(b.distance_to(c), c.distance_to(a)))
+			if longest <= target * 1.35 or next.size() + 4 > MAX_EDGE_TRIS:
+				next.append(t)
+				continue
+			changed = true
+			var m0 := _edge_mid(verts, mids, t.x, t.y, a, b)
+			var m1 := _edge_mid(verts, mids, t.y, t.z, b, c)
+			var m2 := _edge_mid(verts, mids, t.z, t.x, c, a)
+			next.append_array([Vector3i(t.x, m0, m2), Vector3i(m0, t.y, m1),
+				Vector3i(m2, m1, t.z), Vector3i(m0, m1, m2)])
+		out = next
+		depth += 1
+		if not changed:
+			break
+	return out
+
+
+## Boundary edges of a set of (surface, face) pairs. The bake is triangle soup with
+## unshared vertices, so corners are welded by position (1 cm): an edge used by exactly
+## one triangle is a rim - the outline of a hole, a tear, or the open side of a wall.
+## Erased triangles make their neighbours rim edges by their absence, so a gap cut in
+## this editor is selectable edge by edge.
+func _rim_edges(faces: Array) -> Array:
+	var edges := {}
+	var order: Array = []
+	for pair in faces:
+		var si := int(pair[0])
+		var f := int(pair[1])
+		var g: Dictionary = track.surface_geo.get(si, {})
+		if g.is_empty():
+			continue
+		var tri := _face(si, f)
+		if tri.size() < 3:
+			continue
+		var pa: Vector3 = tri[0]
+		var pb: Vector3 = tri[1]
+		var pc: Vector3 = tri[2]
+		var nrm := (pb - pa).cross(pc - pa).normalized()
+		if nrm.length_squared() < 0.5:
+			continue
+		var keys: Array = [_edge_key(pa), _edge_key(pb), _edge_key(pc)]
+		var pts: Array = [pa, pb, pc]
+		for k in 3:
+			var ka: Vector3i = keys[k]
+			var kb: Vector3i = keys[(k + 1) % 3]
+			var ck := _edge_pair_key(ka, kb)
+			if edges.has(ck):
+				edges[ck]["count"] = int(edges[ck]["count"]) + 1
+				continue
+			var ea: Vector3 = pts[k]
+			var eb: Vector3 = pts[(k + 1) % 3]
+			if ea.distance_squared_to(eb) < 0.0004:
+				continue
+			var e := {"a": ea, "b": eb, "ka": ka, "kb": kb, "si": si, "f": f,
+				"n": nrm, "count": 1, "tex": String(g.get("texture", "")),
+				"cls": String(g.get("class", "off")), "alpha": bool(g.get("alpha", false))}
+			edges[ck] = e
+			order.append(e)
+	var rim: Array = []
+	for e in order:
+		if int(e["count"]) == 1:
+			rim.append(e)
+	return rim
+
+
+func _edge_reach() -> float:
+	var reach := clampf(cam_dist * 0.12, EDGE_REACH_MIN, EDGE_REACH_MAX)
+	if brush_radius != null:
+		reach = maxf(reach, brush_radius.value * 2.0)
+	return reach
+
+
+## Rim edges around one point in the world, within reach of it.
+func _rims_around(centre: Vector3, reach: float) -> Array:
+	var out: Array = []
+	for e in _rim_edges(_brush_faces(centre, reach)):
+		# Skip the false rims at the edge of the gather radius, and rims seen from behind
+		# (the far side of a wall would otherwise be drawn and picked through it).
+		var mid := (Vector3(e["a"]) + Vector3(e["b"])) * 0.5
+		if mid.distance_to(centre) > reach:
+			continue
+		if (cam.global_position - mid).dot(Vector3(e["n"])) < 0.0:
+			continue
+		out.append(e)
+	return out
+
+
+## Rim edges around the cursor: around the surface the cursor is on, or around the surface
+## the gap the cursor points into is cut from.
+func _edge_candidates(vp: Vector2) -> Array:
+	if track == null or cam == null or not vp.is_finite():
+		return []
+	if not _grid_built:
+		_build_pick_grid()
+	var reach := _edge_reach()
+	var own := _pick_triangle(vp)
+	var centre := Vector3.ZERO
+	var have := false
+	var hit := own
+	if hit.is_empty():
+		# Pointing into the gap itself: an erased face knows where the level used to be.
+		hit = _pick_hidden(vp)
+	if not hit.is_empty():
+		centre = Vector3(hit.pos)
+		have = true
+	elif _fill_ok:
+		# A gap that was never cut by this editor: fall back to the last fill level.
+		var p: Variant = _fill_plane.intersects_ray(cam.project_ray_origin(vp),
+			cam.project_ray_normal(vp).normalized())
+		if p != null:
+			centre = Vector3(p)
+			have = true
+	var out: Array = _rims_around(centre, reach) if have else []
+	if _edge_pick_from(out, vp).is_empty():
+		# The cursor is not on a rim: it is pointing into the empty middle of a gap, which
+		# has no surface of its own to gather around. Take the rim of what surrounds it.
+		var skip := int(own["surface"]) if not own.is_empty() else -1
+		var depth := cam_dist
+		if not own.is_empty():
+			depth = cam.global_position.distance_to(Vector3(own["pos"]))
+		out.append_array(_edge_gap_candidates(vp, skip, depth))
+	return out
+
+
+## Rim edges of the gap the cursor points into. A gap is empty, so there is nothing there to
+## click: aiming at a hole in a bridge hits the ground below it, and aiming at a hole in a
+## wall hits whatever is behind. The surface the gap is cut into is found by probing a ring
+## around the cursor, and its rim near that probe is gathered like any other.
+func _edge_gap_candidates(vp: Vector2, skip: int, depth: float) -> Array:
+	if track == null or cam == null or not vp.is_finite():
+		return []
+	var probe := _edge_surrounding(vp, skip, depth)
+	if probe.is_empty() and skip >= 0:
+		# A gap can open onto the same surface it is cut into (a road that continues past a
+		# torn-out piece), so fall back to the surface under the cursor instead of nothing.
+		probe = _edge_surrounding(vp, -1, depth)
+	if probe.is_empty():
+		return []
+	var pos := Vector3(probe["pos"])
+	var o := cam.project_ray_origin(vp)
+	var d := cam.project_ray_normal(vp).normalized()
+	# How far the surrounding surface sits from the aim, so the gather still reaches back
+	# across a gap wider than one reach.
+	var off := (o + d * maxf((pos - o).dot(d), 0.0)).distance_to(pos)
+	var reach := clampf(_edge_reach() + off, EDGE_REACH_MIN, EDGE_REACH_MAX * 2.0)
+	return _rims_around(pos, reach)
+
+
+## Nearest geometry on a ring around the cursor: the surface a gap is cut into. Whatever
+## the cursor ray itself hits is skipped, because that is what lies behind the gap. The ring
+## is a distance in metres (converted with the camera's own projection), not in pixels, so
+## it lands just outside a gap whatever the panel size, fov or zoom.
+func _edge_surrounding(vp: Vector2, skip: int, depth: float) -> Dictionary:
+	var r := _edge_reach() * 0.6 * _px_per_metre(vp, depth)
+	for ring in EDGE_PROBE_RINGS:
+		var best: Dictionary = {}
+		var best_t := INF
+		for k in 8:
+			var a := TAU * float(k) / 8.0
+			var hit := _pick_triangle(vp + Vector2(cos(a), sin(a)) * r)
+			if hit.is_empty() or int(hit["surface"]) == skip:
+				continue
+			var t := cam.global_position.distance_to(Vector3(hit["pos"]))
+			if t < best_t:
+				best_t = t
+				best = hit
+		if not best.is_empty():
+			return best
+		r *= 3.0
+	return {}
+
+
+## Pixels per metre at `depth` along the cursor's ray, taken from the camera itself.
+func _px_per_metre(vp: Vector2, depth: float) -> float:
+	var d := cam.project_ray_normal(vp).normalized()
+	var p := cam.project_ray_origin(vp) + d * maxf(depth, 0.5)
+	var right := d.cross(Vector3.UP)
+	if right.length_squared() < 1e-8:
+		right = d.cross(Vector3.RIGHT)
+	right = right.normalized()
+	var px := cam.unproject_position(p).distance_to(cam.unproject_position(p + right))
+	return maxf(px, 0.25)
+
+
+## Hover variant: re-gathering the rim costs a few milliseconds, so the last answer is
+## reused while the cursor barely moves and the camera is still. Clicks always gather
+## fresh; any geometry edit marks this stale.
+func _edge_candidates_cached(vp: Vector2) -> Array:
+	var xf := cam.global_transform if cam != null else Transform3D()
+	if not _edge_hover_dirty and _edge_hover_xf.is_equal_approx(xf) \
+			and vp.distance_to(_edge_hover_vp) < 3.0:
+		return _edge_hover_cache
+	var cands := _edge_candidates(vp)
+	_edge_hover_cache = cands
+	_edge_hover_vp = vp
+	_edge_hover_xf = xf
+	_edge_hover_dirty = false
+	return cands
+
+
+## The whole rim of one surface, for Shift+click (grab a hole's outline at once). Skipped
+## on surfaces so big that welding every face would stall the editor.
+func _surface_rim_edges(si: int) -> Array:
+	var g: Dictionary = track.surface_geo.get(si, {})
+	if g.is_empty():
+		return []
+	var idx: PackedInt32Array = g.idx
+	var faces := idx.size() / 3
+	if faces > MAX_PART_SURFACE:
+		return []
+	var pairs: Array = []
+	for f in faces:
+		if not _is_hidden_face(si, f):
+			pairs.append([si, f])
+	return _rim_edges(pairs)
+
+
+## The rim edge a click at `vp` would take: the closest one on screen, or - when the cursor
+## points into the gap rather than near a rim - the one its ray aims at.
+func _edge_pick(vp: Vector2) -> Dictionary:
+	var cands := _edge_candidates(vp)
+	var best := _edge_pick_from(cands, vp)
+	if not best.is_empty():
+		return best
+	best = _edge_pick_gaze(cands, vp)
+	if not best.is_empty():
+		best = best.duplicate()
+		best["gap"] = true          # aimed into the gap, not at an edge: take its whole rim
+	return best
+
+
+## Rim edge nearest the cursor's line of sight. Pointing into a gap puts no edge close to
+## the cursor on screen, so the one already closest to the ray is what is being aimed at.
+func _edge_pick_gaze(cands: Array, vp: Vector2) -> Dictionary:
+	if track == null or cam == null or not vp.is_finite():
+		return {}
+	var o := cam.project_ray_origin(vp)
+	var d := cam.project_ray_normal(vp).normalized()
+	var best: Dictionary = {}
+	var best_d := INF          # the candidates are already gathered around the aim
+	for e in cands:
+		var mid := (Vector3(e["a"]) + Vector3(e["b"])) * 0.5
+		if cam.is_position_behind(mid):
+			continue
+		if (cam.global_position - mid).dot(Vector3(e["n"])) < 0.0:
+			continue
+		var t := maxf((mid - o).dot(d), 0.0)
+		var dd := (o + d * t).distance_to(mid)
+		if dd < best_d:
+			best_d = dd
+			best = e
+	return best
+
+
+func _edge_pick_from(cands: Array, vp: Vector2) -> Dictionary:
+	if track == null or cam == null or not vp.is_finite():
+		return {}
+	var best: Dictionary = {}
+	var best_d := EDGE_PICK_PX
+	for e in cands:
+		var pa := _project(Vector3(e["a"]))
+		var pb := _project(Vector3(e["b"]))
+		if not pa.is_finite() or not pb.is_finite():
+			continue
+		var mid := (Vector3(e["a"]) + Vector3(e["b"])) * 0.5
+		if (cam.global_position - mid).dot(Vector3(e["n"])) < 0.0:
+			continue
+		var d := _seg2_dist(vp, pa, pb)
+		if d < best_d:
+			best_d = d
+			best = e
+	return best
+
+
+## Shift+click: follow the surface's rim from the clicked edge round the gap and select
+## the whole outline, past the hover gather radius. A corner where three rims meet stops
+## the walk, so a hole joined to the open edge of the piece does not run away.
+func edge_grow(seed: Dictionary) -> int:
+	if track == null:
+		return 0
+	var rim := _surface_rim_edges(int(seed.get("si", -1)))
+	if rim.is_empty():
+		return 0
+	var start_key := _edge_pair_key(Vector3i(seed["ka"]), Vector3i(seed["kb"]))
+	var adj := {}
+	for i in rim.size():
+		var e: Dictionary = rim[i]
+		for key in [Vector3i(e["ka"]), Vector3i(e["kb"])]:
+			var arr: Array = adj.get(key, [])
+			arr.append(i)
+			adj[key] = arr
+	var start := -1
+	for i in rim.size():
+		var e2: Dictionary = rim[i]
+		if _edge_pair_key(Vector3i(e2["ka"]), Vector3i(e2["kb"])) == start_key:
+			start = i
+			break
+	if start < 0:
+		return 0
+	var used := {start: true}
+	var fwd: Array = []
+	_edge_walk_rim(rim, adj, Vector3i(rim[start]["kb"]), start, fwd, used)
+	var back: Array = []
+	_edge_walk_rim(rim, adj, Vector3i(rim[start]["ka"]), start, back, used)
+	back.reverse()
+	var added := 0
+	for e3 in back + [rim[start]] + fwd:
+		if _edge_sel_index(e3) >= 0:
+			continue
+		if edge_sel.size() >= MAX_EDGE_EDGES:
+			break
+		edge_sel.append(_edge_entry(e3))
+		added += 1
+	return added
+
+
+func _edge_walk_rim(rim: Array, adj: Dictionary, start_key: Vector3i, first: int,
+		out: Array, used: Dictionary) -> void:
+	var key := start_key
+	var cur := first
+	while out.size() < MAX_EDGE_EDGES:
+		var corners: Array = adj.get(key, [])
+		if corners.size() != 2:
+			return
+		var next := -1
+		for j in corners:
+			if int(j) != cur and not used.has(int(j)):
+				next = int(j)
+		if next < 0:
+			return
+		used[next] = true
+		var e: Dictionary = rim[next]
+		var ka: Vector3i = e["ka"]
+		var kb: Vector3i = e["kb"]
+		out.append(e)
+		key = kb if ka == key else ka
+		cur = next
+
+
+func _edge_entry(e: Dictionary) -> Dictionary:
+	return {"a": e["a"], "b": e["b"], "ka": e["ka"], "kb": e["kb"],
+		"si": e["si"], "f": e["f"], "n": e["n"], "tex": e["tex"],
+		"cls": e["cls"], "alpha": e["alpha"]}
+
+
+func _edge_sel_index(e: Dictionary) -> int:
+	var ka: Vector3i = e["ka"]
+	var kb: Vector3i = e["kb"]
+	for i in edge_sel.size():
+		var s: Dictionary = edge_sel[i]
+		var sa: Vector3i = s["ka"]
+		var sb: Vector3i = s["kb"]
+		if (sa == ka and sb == kb) or (sa == kb and sb == ka):
+			return i
+	return -1
+
+
+func _edge_toggle(e: Dictionary) -> void:
+	var i := _edge_sel_index(e)
+	if i >= 0:
+		edge_sel.remove_at(i)
+		status("Edge removed - %d selected." % edge_sel.size())
+	else:
+		if edge_sel.size() >= MAX_EDGE_EDGES:
+			status("Edge fill: %d edges is the limit - fill this part, then select the rest." % MAX_EDGE_EDGES)
+			return
+		edge_sel.append(_edge_entry(e))
+		status("Edge selected - %d so far. Fill edges (Enter) closes the rim." % edge_sel.size())
+	_edge_redraw()
+	_edge_rim_redraw(_edge_hover_cache)
+	_edge_refresh()
+
+
+func clear_edges() -> void:
+	if edge_sel.is_empty():
+		status("No rim edges selected.")
+		return
+	edge_sel.clear()
+	edge_hover = {}
+	_edge_redraw()
+	_edge_hover_redraw()
+	_edge_rim_redraw(_edge_hover_cache)
+	_edge_refresh()
+	status("Cleared the rim edges.")
+
+
+func _edge_redraw() -> void:
+	if edge_sel_mesh == null:
+		return
+	var im := edge_sel_mesh.mesh as ImmediateMesh
+	im.clear_surfaces()
+	if edge_sel.is_empty():
+		return
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	for e in edge_sel:
+		im.surface_set_color(Color(1.0, 0.82, 0.2, 1.0))
+		im.surface_add_vertex(Vector3(e["a"]))
+		im.surface_add_vertex(Vector3(e["b"]))
+	im.surface_end()
+
+
+func _edge_hover_redraw() -> void:
+	if edge_hover_mesh == null:
+		return
+	var im := edge_hover_mesh.mesh as ImmediateMesh
+	im.clear_surfaces()
+	if edge_hover.is_empty():
+		return
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	im.surface_set_color(Color(0.45, 1.0, 0.95, 1.0))
+	im.surface_add_vertex(Vector3(edge_hover["a"]))
+	im.surface_add_vertex(Vector3(edge_hover["b"]))
+	im.surface_end()
+
+
+## Every rim edge near the cursor, dimmed: the hole's outline is visible before anything
+## is picked, and unselected edges stand out against the yellow ones.
+func _edge_rim_redraw(cands: Array) -> void:
+	if edge_rim_mesh == null:
+		return
+	var im := edge_rim_mesh.mesh as ImmediateMesh
+	im.clear_surfaces()
+	if cands.is_empty():
+		return
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	for e in cands:
+		if _edge_sel_index(e) >= 0:
+			continue
+		im.surface_set_color(Color(0.55, 0.95, 0.75, 0.55))
+		im.surface_add_vertex(Vector3(e["a"]))
+		im.surface_add_vertex(Vector3(e["b"]))
+	im.surface_end()
+
+
+## Shows the rim around the cursor (thin lines) and lights up the edge a click would take,
+## so it is clear where the gap's outline runs and what is still unselected.
+func _edge_hover_at(vp: Vector2) -> void:
+	if tool != "edge":
+		return
+	var cands := _edge_candidates_cached(vp)
+	_edge_rim_redraw(cands)
+	var e := _edge_pick_from(cands, vp)
+	if e.is_empty():
+		e = _edge_pick_gaze(cands, vp)
+		if not e.is_empty():
+			e = e.duplicate()
+			e["gap"] = true
+	if not e.is_empty() and _edge_sel_index(e) >= 0:
+		e = {}
+	var changed := e.is_empty() != edge_hover.is_empty()
+	if not e.is_empty() and not changed:
+		changed = edge_hover.get("ka") != e.get("ka") or edge_hover.get("kb") != e.get("kb")
+	if changed:
+		edge_hover = e
+		_edge_hover_redraw()
+	preview_holder.mouse_default_cursor_shape = \
+		Control.CURSOR_POINTING_HAND if not e.is_empty() else Control.CURSOR_ARROW
+
+
+## Selected rim edges grouped into chains by welded corner: a closed chain is one outline,
+## two open chains are the two sides of a gap.
+func _edge_chains() -> Array:
+	var adj := {}
+	for i in edge_sel.size():
+		var e: Dictionary = edge_sel[i]
+		for key in [Vector3i(e["ka"]), Vector3i(e["kb"])]:
+			var arr: Array = adj.get(key, [])
+			arr.append(i)
+			adj[key] = arr
+	for key in adj:
+		if (adj[key] as Array).size() > 2:
+			return []      # three selected edges at one corner: ambiguous
+	var used := {}
+	var chains: Array = []
+	for key in adj:
+		if (adj[key] as Array).size() != 1:
+			continue
+		var i := int((adj[key] as Array)[0])
+		if not used.has(i):
+			chains.append(_edge_walk(i, key, adj, used))
+	for i in edge_sel.size():
+		if not used.has(i):
+			chains.append(_edge_walk(i, null, adj, used))
+	return chains
+
+
+func _edge_walk(start: int, from_key: Variant, adj: Dictionary, used: Dictionary) -> Dictionary:
+	var e: Dictionary = edge_sel[start]
+	var ka: Vector3i = e["ka"]
+	var kb: Vector3i = e["kb"]
+	var a: Vector3 = e["a"]
+	var b: Vector3 = e["b"]
+	if from_key != null and from_key == kb:
+		var tp := a
+		a = b
+		b = tp
+		var tk := ka
+		ka = kb
+		kb = tk
+	var pts: Array = [a, b]
+	var keys: Array = [ka, kb]
+	used[start] = true
+	var end_key := kb
+	while true:
+		var next := -1
+		for j in (adj.get(end_key, []) as Array):
+			if not used.has(j):
+				next = int(j)
+				break
+		if next < 0:
+			break
+		var ne: Dictionary = edge_sel[next]
+		var na: Vector3i = ne["ka"]
+		var nb: Vector3i = ne["kb"]
+		if na == end_key:
+			pts.append(Vector3(ne["b"]))
+			end_key = nb
+		else:
+			pts.append(Vector3(ne["a"]))
+			end_key = na
+		keys.append(end_key)
+		used[next] = true
+	var closed: bool = pts.size() > 2 and keys[0] == keys[keys.size() - 1]
+	if closed:
+		pts.remove_at(pts.size() - 1)
+		keys.remove_at(keys.size() - 1)
+	return {"pts": pts, "keys": keys, "closed": closed}
+
+
+## Texture, class and the face the UVs come from: the majority among the selected rim
+## edges, so mixing two surfaces still picks the one most of the rim belongs to.
+func _edge_reference() -> Dictionary:
+	if track == null or track.data.is_empty():
+		return {}
+	var counts := {}
+	var best := ""
+	for e in edge_sel:
+		var k := String(e["tex"]) + "\n" + String(e["cls"])
+		counts[k] = int(counts.get(k, 0)) + 1
+		if best == "" or int(counts[k]) > int(counts[best]):
+			best = k
+	var ref: Dictionary = {}
+	for e in edge_sel:
+		if String(e["tex"]) + "\n" + String(e["cls"]) == best:
+			ref = e
+			break
+	if ref.is_empty():
+		return {}
+	var tex := String(ref["tex"])
+	if tex.begins_with("conn"):
+		# Connector surfaces use a blend shader; a patch takes the far texture.
+		var conns: Dictionary = track.data.get("connectors", {})
+		tex = String((conns.get(tex, {}) as Dictionary).get("b", ""))
+	if patch_pick != null and patch_pick.selected >= 0:
+		var chosen := String(patch_pick.get_item_metadata(patch_pick.selected))
+		if chosen != "":
+			tex = chosen
+	var cls := String(ref["cls"])
+	if cls != "road" and cls != "wall":
+		cls = "off"
+	return {"si": int(ref["si"]), "f": int(ref["f"]), "tex": tex,
+		"cls": cls, "alpha": bool(ref["alpha"])}
+
+
+## Average edge length of the triangles the rim belongs to - the density to match.
+func _edge_mesh_scale() -> float:
+	var seen := {}
+	var total := 0.0
+	var n := 0
+	for e in edge_sel:
+		var key := Vector2i(int(e["si"]), int(e["f"]))
+		if seen.has(key):
+			continue
+		seen[key] = true
+		var tri := _face(int(e["si"]), int(e["f"]))
+		if tri.size() < 3:
+			continue
+		for k in 3:
+			total += Vector3(tri[k]).distance_to(Vector3(tri[(k + 1) % 3]))
+			n += 1
+	return total / float(n) if n > 0 else 0.0
+
+
+## Plane of the selected rim. Newell's normal follows the outline, so a hole on a slope
+## gets the rim's plane rather than the one triangle the cursor happened to be over. A
+## bridge between two rims has no outline: its plane is the one through both of them
+## (which also works when the rims face each other across a slot and their normals
+## cancel), falling back to the faces' own normals.
+func _edge_plane(rim: Array, mode: String, chains: Array = []) -> Dictionary:
+	if rim.is_empty():
+		return {}
+	var c := Vector3.ZERO
+	for p in rim:
+		c += Vector3(p)
+	c /= float(rim.size())
+	var n := Vector3.ZERO
+	if mode == "loop" or chains.size() < 2:
+		n = _newell_normal(rim)
+	else:
+		var pa: Array = chains[0]["pts"]
+		var pb: Array = chains[1]["pts"]
+		n = (Vector3(pa[pa.size() - 1]) - Vector3(pa[0])).cross(Vector3(pb[0]) - Vector3(pa[0]))
+		if n.length_squared() < 1e-6:
+			for e in edge_sel:
+				n += Vector3(e["n"])
+	if n.length_squared() < 1e-8:
+		return {}
+	n = n.normalized()
+	if cam != null and (cam.global_position - c).dot(n) < 0.0:
+		n = -n
+	var u := Vector3(rim[0]) - c
+	u = u - n * u.dot(n)
+	if u.length_squared() < 1e-6:
+		u = Vector3.RIGHT - n * n.x
+	if u.length_squared() < 1e-6:
+		u = Vector3.BACK - n * n.z
+	u = u.normalized()
+	return {"c": c, "n": n, "u": u, "v": n.cross(u)}
+
+
+func _edge_uv_ref(ref: Dictionary) -> Dictionary:
+	var si := int(ref.get("si", -1))
+	var f := int(ref.get("f", -1))
+	var tri := _face(si, f)
+	var uvs := _tri_uv(si, f)
+	if tri.size() < 3 or uvs.size() < 3:
+		return {}
+	var valid := Vector2(uvs[0]).distance_squared_to(Vector2(uvs[1])) > 1e-8 \
+		or Vector2(uvs[0]).distance_squared_to(Vector2(uvs[2])) > 1e-8
+	return {"a": tri[0], "b": tri[1], "c": tri[2], "uv": uvs, "valid": valid}
+
+
+## UV for a fill vertex, continued from the rim's own triangle, so texels line up with the
+## course instead of restarting at the fill.
+func _edge_uv(p: Vector3, ref: Dictionary, plane: Dictionary) -> Array:
+	if not ref.is_empty() and bool(ref.get("valid", false)):
+		var uvs: Array = ref["uv"]
+		var t := _bary_uv(p, Vector3(ref["a"]), Vector3(ref["b"]), Vector3(ref["c"]),
+			Vector2(uvs[0]), Vector2(uvs[1]), Vector2(uvs[2]))
+		return [_r(t.x, 0.0001), _r(t.y, 0.0001)]
+	# A surface with no real UV (flat colour): a half-metre grid keeps it sane.
+	return [_r(p.dot(Vector3(plane["u"])) * 2.0, 0.0001),
+		_r(p.dot(Vector3(plane["v"])) * 2.0, 0.0001)]
+
+
+func _edge_patch(sol: Dictionary) -> Dictionary:
+	var plane: Dictionary = sol["plane"]
+	var ref: Dictionary = sol["ref"]
+	var verts: Array = sol["verts"]
+	var out_verts: Array = []
+	var uvs: Array = []
+	for p in verts:
+		var q: Vector3 = p
+		out_verts.append([_r(q.x), _r(q.y), _r(q.z)])
+		uvs.append(_edge_uv(q, ref, plane))
+	var idx: Array = []
+	for t in (sol["tris"] as Array):
+		idx.append_array([t.x, t.y, t.z])
+	var n: Vector3 = plane["n"]
+	return {
+		"texture": String(sol["tex"]), "alpha": bool(sol["alpha"]), "class": String(sol["cls"]),
+		"nrm": [_r(n.x, 0.0001), _r(n.y, 0.0001), _r(n.z, 0.0001)],
+		"verts": out_verts, "uv": uvs, "idx": idx,
+	}
+
+
+## What Fill edges would build, without changing anything: chains, plane, texture from the
+## rim's surface, the triangles after density matching, and the area. Drives the live
+## label, and the fill itself uses the same answer so both always agree.
+func edge_solve() -> Dictionary:
+	if track == null:
+		return {"ok": false, "msg": "no map loaded"}
+	if edge_sel.size() < 2:
+		return {"ok": false, "msg": "click at least two rim edges"}
+	var chains := _edge_chains()
+	if chains.is_empty():
+		return {"ok": false, "msg": "these edges meet three at a corner - pick a clean rim"}
+	var open := 0
+	for c in chains:
+		if not bool(c["closed"]):
+			open += 1
+	var mode := "loop"
+	var note := ""
+	if chains.size() == 1 and bool(chains[0]["closed"]):
+		mode = "loop"
+	elif chains.size() == 1:
+		mode = "loop"
+		note = "an open rim, closed with a straight edge"
+	elif chains.size() == 2 and open == 2:
+		mode = "bridge"
+		note = "two rims bridged"
+	else:
+		return {"ok": false, "msg": "%d separate rims - fill one gap at a time" % chains.size()}
+	var rim: Array = []
+	for c in chains:
+		rim.append_array(c["pts"])
+	var ref := _edge_reference()
+	if ref.is_empty():
+		return {"ok": false, "msg": "could not read the surface under these edges"}
+	var plane := _edge_plane(rim, mode, chains)
+	if plane.is_empty():
+		return {"ok": false, "msg": "these edges do not lie on one plane"}
+	var verts: Array = []
+	var tris: Array = []
+	if mode == "loop":
+		var outline := _edge_unique(rim)
+		if outline.size() < 3:
+			return {"ok": false, "msg": "two edges cannot enclose an area - select the whole rim"}
+		var poly := PackedVector2Array()
+		for p in outline:
+			poly.append(_to_2d(Vector3(p), plane))
+		if absf(_poly_area(poly)) < 1e-4:
+			return {"ok": false, "msg": "that rim encloses no area"}
+		tris = _triangulate(poly)
+		if tris.is_empty():
+			return {"ok": false, "msg": "that rim crosses itself - select one clean loop"}
+		verts = outline.duplicate()
+	else:
+		var steps := mini(64, maxi(maxi((chains[0]["pts"] as Array).size(),
+			(chains[1]["pts"] as Array).size()) - 1, 1))
+		var rows := _edge_bridge_rows(chains[0]["pts"], chains[1]["pts"], steps)
+		verts = rows["verts"]
+		tris = rows["tris"]
+	tris = _edge_orient(verts, tris, plane)
+	if tris.is_empty():
+		return {"ok": false, "msg": "the fill came out degenerate - select the rim again"}
+	var target := 0.0
+	if edge_density != null and edge_density.button_pressed:
+		target = clampf(_edge_mesh_scale(), 0.05, 20.0)
+		tris = _edge_subdivide(verts, tris, target)
+	var area := 0.0
+	for t in tris:
+		var a: Vector3 = verts[t.x]
+		var b: Vector3 = verts[t.y]
+		var c: Vector3 = verts[t.z]
+		area += (b - a).cross(c - a).length() * 0.5
+	return {"ok": true, "msg": "", "mode": mode, "note": note, "chains": chains,
+		"edges": edge_sel.size(), "verts": verts, "tris": tris, "area": area,
+		"tex": String(ref["tex"]), "cls": String(ref["cls"]), "alpha": bool(ref["alpha"]),
+		"ref": _edge_uv_ref(ref), "plane": plane, "target": target}
+
+
+## Fill edges: closes the selected rim with real triangles. Unlike the brush this does not
+## sample a grid - the rim's own vertices become the patch outline, so the sheet meets the
+## course exactly. Texture, class and UVs continue the surface the rim belongs to, and the
+## triangles are split to that surface's density.
+func fill_edges() -> void:
+	if track == null:
+		return
+	var sol := edge_solve()
+	if not bool(sol.get("ok", false)):
+		status("Edge fill: %s." % String(sol.get("msg", "nothing to fill")))
+		_edge_refresh()
+		return
+	var patch := _edge_patch(sol)
+	var patches: Array = []
+	var existing: Variant = decor.get("patches", [])
+	if existing is Array:
+		patches = existing
+	patches.append(patch)
+	decor["patches"] = patches
+	var edge_count := edge_sel.size()
+	var rim_count := (sol["chains"] as Array).size()
+	var tris: Array = sol["tris"]
+	var area := float(sol["area"])
+	edge_sel.clear()
+	edge_hover = {}
+	_edge_hover_dirty = true
+	_edge_redraw()
+	_edge_rim_redraw([])
+	track.apply_decor(decor)
+	_refresh_surface_list()
+	_refresh_selection_ui()
+	_update_gizmo()
+	_commit()
+	_edge_refresh()
+	var tex := String(sol["tex"])
+	var msg := "Edge fill: %d edge(s) in %d rim(s) -> %d triangles over %.1f m2 of %s" % [
+		edge_count, rim_count, tris.size(), area,
+		tex.get_basename().replace(".png", "") if tex != "" else "a flat colour"]
+	if float(sol["target"]) > 0.0:
+		msg += " (tri size matched to %.2f m)" % float(sol["target"])
+	if String(sol["note"]) != "":
+		msg += "; " + String(sol["note"])
+	status(msg + ".")
+
+
+## Live plan under the panel controls, so the texture and triangle count are known before
+## anything is committed.
+func _edge_refresh() -> void:
+	if edge_fill_btn != null:
+		edge_fill_btn.disabled = edge_sel.size() < 2
+	if edge_label == null:
+		return
+	if edge_sel.is_empty():
+		edge_label.text = "Edges: click the rim edge of a gap, Shift+click for the whole rim, then Fill edges (Enter)."
+		return
+	var sol := edge_solve()
+	if not bool(sol.get("ok", false)):
+		edge_label.text = "%d edge(s): %s." % [edge_sel.size(), String(sol.get("msg", ""))]
+		return
+	var tex := String(sol["tex"])
+	edge_label.text = "%d edge(s) -> %d rim(s), %d tri(s), %.1f m2, %s%s" % [edge_sel.size(),
+		(sol["chains"] as Array).size(), (sol["tris"] as Array).size(), float(sol["area"]),
+		tex.get_basename().replace(".png", "") if tex != "" else "flat colour",
+		("; " + String(sol["note"])) if String(sol["note"]) != "" else ""]
 
 
 func _refresh_patch_textures() -> void:
@@ -2053,10 +3832,17 @@ func _update_brush_hover(vp: Vector2) -> void:
 		_hide_brush()
 		return
 	var hit := _pick_triangle(vp)
-	if hit.is_empty():
-		_hide_brush()
-	else:
+	if not hit.is_empty():
 		_show_brush(hit.pos, hit.normal)
+		return
+	# Over empty space a fill still has a level to paint on, so keep the ring there.
+	if tool == "fill" and _fill_ok:
+		var p: Variant = _fill_plane.intersects_ray(cam.project_ray_origin(vp),
+			cam.project_ray_normal(vp).normalized())
+		if p != null:
+			_show_brush(Vector3(p), _fill_normal)
+			return
+	_hide_brush()
 
 
 func _shortcut_input(e: InputEvent) -> void:
@@ -2108,6 +3894,16 @@ func _shortcut_input(e: InputEvent) -> void:
 		KEY_6:
 			_set_tool("restore")
 			accept_event()
+		KEY_7:
+			_set_tool("hole")
+			accept_event()
+		KEY_8:
+			_set_tool("edge")
+			accept_event()
+		KEY_ENTER, KEY_KP_ENTER:
+			if tool == "edge":
+				fill_edges()
+				accept_event()
 		KEY_DELETE, KEY_BACKSPACE:
 			delete_selected()
 			accept_event()
