@@ -3,8 +3,13 @@ extends Node3D
 ## A race course baked by the Map Combiner (assets/maps/<id>/track.json + .bin):
 ## render meshes, collision split by surface class, centreline, alternate routes,
 ## checkpoints and starting grid. Also answers "where am I on the course".
+##
+## A bake can be cleaned up and decorated with the Map Editor dock, which writes
+## decor.json next to track.json: erased triangles ("hidden"), hidden surfaces and
+## decoration props. Re-baking the map leaves decor.json in place.
 
 const DEFAULT_DATA := "res://assets/maps/retro_circuit/track.json"
+const DECOR_NAME := "decor.json"
 ## Baked map to load (track.json; track.bin and tex/ sit next to it).
 var data_path := DEFAULT_DATA
 var TEX_DIR := ""
@@ -14,6 +19,17 @@ const CONNECTOR_SHADER := preload("res://src/track/connector.gdshader")
 const LAYER_TRACK := 1
 
 var data: Dictionary
+var decor: Dictionary = {}         ## decor.json: {"props": [...], "hidden": {...}}
+## surface index -> {face index: true}: triangles erased in the Map Editor.
+var hidden_faces := {}
+var hidden_surfaces := {}          ## surface index -> true
+## Per-surface source arrays, only filled when `keep_geometry` is on (the Map Editor
+## needs them to pick and erase triangles): index -> {"pos", "idx", "class"}.
+var surface_geo := {}
+var keep_geometry := false
+var _floats := PackedFloat32Array()
+var _ints := PackedInt32Array()
+var props_root: Node3D             ## decoration props from decor.json
 var path := TrackPath.new()        ## main route
 ## Alternate routes: [{"path": TrackPath, "from": int, "to": int, "ai": bool, "name": String}]
 var forks: Array[Dictionary] = []
@@ -36,6 +52,7 @@ func load_track(map_path: String = "") -> void:
 	TEX_DIR = data_path.get_base_dir() + "/tex/"
 	var f := FileAccess.open(data_path, FileAccess.READ)
 	data = JSON.parse_string(f.get_as_text())
+	_read_decor()
 	path.build(data.centreline, true)
 	forks.clear()
 	var fl: Array = data.get("forks", [data.fork] if data.has("fork") else [])
@@ -59,12 +76,25 @@ func load_track(map_path: String = "") -> void:
 
 
 func _build_geometry() -> void:
-	var bin := FileAccess.open(data_path.get_basename() + ".bin", FileAccess.READ)
-	var fl: PackedFloat32Array = bin.get_buffer(int(data.float_count) * 4).to_float32_array()
-	var ints: PackedInt32Array = bin.get_buffer(int(data.int_count) * 4).to_int32_array()
+	var fl := _floats
+	var ints := _ints
+	if fl.is_empty():
+		var bin := FileAccess.open(data_path.get_basename() + ".bin", FileAccess.READ)
+		if bin == null:
+			push_error("Track: missing " + data_path.get_basename() + ".bin")
+			return
+		fl = bin.get_buffer(int(data.float_count) * 4).to_float32_array()
+		ints = bin.get_buffer(int(data.int_count) * 4).to_int32_array()
+		if keep_geometry:
+			_floats = fl
+			_ints = ints
 	var mesh := ArrayMesh.new()
 	var col_faces := {"road": PackedVector3Array(), "off": PackedVector3Array(), "wall": PackedVector3Array()}
-	for s in data.surfaces:
+	var surfaces: Array = data.surfaces
+	for si in surfaces.size():
+		var s: Dictionary = surfaces[si]
+		if hidden_surfaces.has(si):
+			continue
 		var nv := int(s.vertices)
 		var pos := _vec3(fl, int(s.pos), nv)
 		var nrm := _vec3(fl, int(s.nrm), nv)
@@ -74,6 +104,12 @@ func _build_geometry() -> void:
 		for i in nv:
 			uv[i] = Vector2(fl[uo + i * 2], fl[uo + i * 2 + 1])
 		var idx := ints.slice(int(s.idx), int(s.idx) + int(s.indices))
+		if keep_geometry:
+			surface_geo[si] = {"pos": pos, "idx": idx, "class": String(s["class"]),
+				"texture": String(s.texture)}
+		idx = _without_hidden(si, idx)
+		if idx.is_empty():
+			continue
 		var arrays := []
 		arrays.resize(Mesh.ARRAY_MAX)
 		arrays[Mesh.ARRAY_VERTEX] = pos
@@ -114,6 +150,81 @@ func _build_geometry() -> void:
 		body.add_child(cs)
 		add_child(body)
 		surface_bodies[cls] = body
+	props_root = Node3D.new()
+	props_root.name = "Props"
+	add_child(props_root)
+	var props: Array = decor.get("props", [])
+	TrackProps.spawn(props_root, props)
+
+
+## The index buffer of surface `si` minus the triangles erased in the Map Editor.
+func _without_hidden(si: int, idx: PackedInt32Array) -> PackedInt32Array:
+	var hid: Dictionary = hidden_faces.get(si, {})
+	if hid.is_empty():
+		return idx
+	var kept := PackedInt32Array()
+	var faces := idx.size() / 3
+	for f in faces:
+		if not hid.has(f):
+			kept.append(idx[f * 3])
+			kept.append(idx[f * 3 + 1])
+			kept.append(idx[f * 3 + 2])
+	return kept
+
+
+# --- decor.json (Map Editor edits) --------------------------------------------------
+
+func _read_decor() -> void:
+	# The Map Editor fills `decor` itself before load_track, so it is not read twice.
+	if decor.is_empty():
+		var dp := data_path.get_base_dir() + "/" + DECOR_NAME
+		if FileAccess.file_exists(dp):
+			var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(dp))
+			if parsed is Dictionary:
+				decor = parsed
+			else:
+				push_warning("Track: could not parse " + dp)
+	_apply_decor_sets()
+
+
+func _apply_decor_sets() -> void:
+	hidden_faces.clear()
+	hidden_surfaces.clear()
+	var hid: Variant = decor.get("hidden", {})
+	if hid is Dictionary:
+		for k in hid:
+			var faces := {}
+			var list: Variant = hid[k]
+			if list is Array:
+				for f in list:
+					faces[int(f)] = true
+			if not faces.is_empty():
+				hidden_faces[int(k)] = faces
+	var hs: Variant = decor.get("hidden_surfaces", [])
+	if hs is Array:
+		for s in hs:
+			hidden_surfaces[int(s)] = true
+
+
+## Editor hook: replace the decoration and rebuild. The game loads decor.json itself.
+func apply_decor(d: Dictionary) -> void:
+	decor = d
+	_apply_decor_sets()
+	rebuild()
+
+
+func rebuild() -> void:
+	_clear_geometry()
+	_build_geometry()
+
+
+func _clear_geometry() -> void:
+	for c in get_children():
+		remove_child(c)
+		c.queue_free()
+	surface_bodies.clear()
+	surface_geo.clear()
+	props_root = null
 
 
 static func _vec3(fl: PackedFloat32Array, off: int, n: int) -> PackedVector3Array:

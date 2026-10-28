@@ -74,6 +74,10 @@ Racer progress, laps, respawns, the loop, AI line-following, HUD and camera are 
   Last run: both finished 3 laps (Sonic 47.6–53.4 s laps, Mario 59.3–76.2 s), 1 respawn
   (kart ran off the open edge at the island exit).
 * `res://scenes/check_floor.tscn` — road gap check (above).
+* `godot --headless --path . -s tools/test_map_editor.gd` — Map Editor smoke test: stamps
+  a prop, erases a triangle, saves and reloads `decor.json`, and loads a plain `Track` to
+  check the prop spawns and the erased triangle is gone from the course mesh. It deletes
+  the `decor.json` it wrote unless the map already had one.
 * Visual: `scenes/capture_race.tscn`, `tools/render_rigs.gd`, `tools/render_track.gd`.
 
 ## Rebuilding assets
@@ -98,8 +102,14 @@ Tunables (cut points, island offset, loop radius, scales) are constants at the t
 
 - **Main menu** (`scenes/main_menu.tscn`, now the start scene): pick a character, paint it (and its kart), pick a map, laps and opponents. Choices are saved in `user://profile.json`.
 - **Content is data:** `content/characters`, `content/karts`, `content/maps`, `content/track_sources` (JSON). The menu lists whatever is in those folders.
-- **Editor plugin "Retro Karting Tools"** (enabled in Project Settings → Plugins) adds three bottom-panel docks:
+- **Editor plugin "Retro Karting Tools"** (enabled in Project Settings → Plugins) adds four bottom-panel docks:
   - **Map Combiner:** choose segments from the source tracks (whole loop, cut section, or piece range). Place them by dragging, Shift-drag to rotate, wheel to zoom and right-drag to pan. "Pick" buttons set cut points and the start. Each connector can have a vertical loop. **Bake** runs `tools/bake/trackbake.py` (needs Python 3 with numpy, pillow, opencv-python, scikit-image, networkx and matplotlib). Press **Set up Python** once: it makes a private environment with those packages in the project's user data folder (`user://bake_venv`, outside the project) and Bake uses it automatically (on Mint/Ubuntu this needs `sudo apt install python3-venv` first). Bake runs in the background and writes `assets/maps/<id>/`; a map only appears in the game's menu once it has baked successfully.
+  - **Map Editor:** open a baked map and edit the merge itself in 3D, then decorate it. The course is shown with the game's sky, fog and light; middle-drag orbits, Shift+middle pans, wheel zooms, **F** frames, double-click a spot to fly to it. Three tools:
+    - **Select (1)**: click a prop, then drag the gizmo to **move** (G, arrows), **rotate** (R, ring; Ctrl snaps to 15°) or **scale** (S, handle; drag up/down). Position/rotation/scale/colour are also in the panel; **Snap to ground** drops the prop onto the geometry below. **Delete** removes it, Ctrl+D duplicates, Ctrl+Z / Ctrl+Shift+Z undo.
+    - **Place (2)**: pick a prop (tree, pine, palm, bush, rock, traffic cone, lamp post, sign), a colour, random yaw and size jitter, then click the course to stamp one (each click places a prop; **Add at view** stamps where the camera looks).
+    - **Erase (3)**: drag over baked geometry to erase individual triangles - floating scenery, z-fighting or leftover pieces - and the panel lists every baked surface (texture + class) so a whole surface can be hidden instead. Restore faces / Restore all undo it.
+
+    Edits are written to `assets/maps/<id>/decor.json` with **Save** (Ctrl+S): `props` (type, pos, yaw in degrees, scale, tint), `hidden` (surface index -> erased face indices) and `hidden_surfaces`. `Track` reads it whenever the map loads, so the game shows exactly what the editor shows; re-baking the map keeps `decor.json`, but surface indices change, so re-check the clean-up after a re-bake.
   - **Character Importer:** put a model inside the project (e.g. `res://import/<name>/`) and enter its path. Set the type (runner or kart driver), which way it faces, the height and the split mode:
     - `auto`: biped split from the silhouette.
     - `nodes`: one part per mesh node, using the node origins as pivots.
