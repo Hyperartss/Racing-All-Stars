@@ -105,8 +105,8 @@ func _build_geometry() -> void:
 			uv[i] = Vector2(fl[uo + i * 2], fl[uo + i * 2 + 1])
 		var idx := ints.slice(int(s.idx), int(s.idx) + int(s.indices))
 		if keep_geometry:
-			surface_geo[si] = {"pos": pos, "idx": idx, "class": String(s["class"]),
-				"texture": String(s.texture)}
+			surface_geo[si] = {"pos": pos, "idx": idx, "uv": uv, "class": String(s["class"]),
+				"texture": String(s.texture), "alpha": bool(s.alpha)}
 		idx = _without_hidden(si, idx)
 		if idx.is_empty():
 			continue
@@ -136,6 +136,7 @@ func _build_geometry() -> void:
 	mi.mesh = mesh
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
+	_build_patches(col_faces)
 	for cls in col_faces:
 		var body := StaticBody3D.new()
 		body.name = "Collision_" + cls
@@ -155,6 +156,70 @@ func _build_geometry() -> void:
 	add_child(props_root)
 	var props: Array = decor.get("props", [])
 	TrackProps.spawn(props_root, props)
+
+
+static func _vec3_of(v: Variant) -> Vector3:
+	if v is Vector3:
+		return v
+	if v is Array and v.size() >= 3:
+		return Vector3(float(v[0]), float(v[1]), float(v[2]))
+	return Vector3.ZERO
+
+
+## Fill patches made in the Map Editor (decor.json "patches"): flat, textured pieces
+## placed over a gap or a hole, in their own mesh so course surface indices stay put.
+func _build_patches(col_faces: Dictionary) -> void:
+	var patches: Variant = decor.get("patches", [])
+	if not (patches is Array) or (patches as Array).is_empty():
+		return
+	var mesh := ArrayMesh.new()
+	for p in patches:
+		if not (p is Dictionary):
+			continue
+		var verts: Array = p.get("verts", [])
+		var uvs: Array = p.get("uv", [])
+		var ind: Array = p.get("idx", [])
+		if verts.size() < 3 or ind.size() < 3:
+			continue
+		var nv := verts.size()
+		var pos := PackedVector3Array()
+		pos.resize(nv)
+		var nrm := PackedVector3Array()
+		nrm.resize(nv)
+		var uv := PackedVector2Array()
+		uv.resize(nv)
+		var n := _vec3_of(p.get("nrm", [0.0, 1.0, 0.0])).normalized()
+		for i in nv:
+			pos[i] = _vec3_of(verts[i])
+			nrm[i] = n
+			if i < uvs.size() and uvs[i] is Array and (uvs[i] as Array).size() >= 2:
+				uv[i] = Vector2(float(uvs[i][0]), float(uvs[i][1]))
+		var idx := PackedInt32Array()
+		idx.resize(ind.size())
+		for i in ind.size():
+			idx[i] = int(ind[i])
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = pos
+		arrays[Mesh.ARRAY_NORMAL] = nrm
+		arrays[Mesh.ARRAY_TEX_UV] = uv
+		arrays[Mesh.ARRAY_INDEX] = idx
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(mesh.get_surface_count() - 1,
+			_material({"texture": p.get("texture", ""), "alpha": bool(p.get("alpha", false))}))
+		var cls := String(p.get("class", "off"))
+		if col_faces.has(cls):
+			var faces: PackedVector3Array = col_faces[cls]
+			for k in idx.size():
+				faces.append(pos[idx[k]])
+			col_faces[cls] = faces
+	if mesh.get_surface_count() == 0:
+		return
+	var mi := MeshInstance3D.new()
+	mi.name = "Patches"
+	mi.mesh = mesh
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
 
 
 ## The index buffer of surface `si` minus the triangles erased in the Map Editor.

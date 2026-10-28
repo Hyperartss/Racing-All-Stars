@@ -75,9 +75,11 @@ Racer progress, laps, respawns, the loop, AI line-following, HUD and camera are 
   (kart ran off the open edge at the island exit).
 * `res://scenes/check_floor.tscn` — road gap check (above).
 * `godot --headless --path . -s tools/test_map_editor.gd` — Map Editor smoke test: stamps
-  a prop, erases a triangle, saves and reloads `decor.json`, and loads a plain `Track` to
-  check the prop spawns and the erased triangle is gone from the course mesh. It deletes
-  the `decor.json` it wrote unless the map already had one.
+  a prop, deletes a connected part, uses the erase and restore brushes, fills a patch, saves
+  and reloads `decor.json`, and loads a plain `Track` to check the prop spawns, the patch
+  mesh is built and the erased triangle is gone from the course mesh. It also checks that
+  Delete part refuses an oversized piece on `retro_circuit`. It deletes the `decor.json` it
+  wrote unless the map already had one.
 * Visual: `scenes/capture_race.tscn`, `tools/render_rigs.gd`, `tools/render_track.gd`.
 
 ## Rebuilding assets
@@ -104,12 +106,15 @@ Tunables (cut points, island offset, loop radius, scales) are constants at the t
 - **Content is data:** `content/characters`, `content/karts`, `content/maps`, `content/track_sources` (JSON). The menu lists whatever is in those folders.
 - **Editor plugin "Retro Karting Tools"** (enabled in Project Settings → Plugins) adds four bottom-panel docks:
   - **Map Combiner:** choose segments from the source tracks (whole loop, cut section, or piece range). Place them by dragging, Shift-drag to rotate, wheel to zoom and right-drag to pan. "Pick" buttons set cut points and the start. Each connector can have a vertical loop. **Bake** runs `tools/bake/trackbake.py` (needs Python 3 with numpy, pillow, opencv-python, scikit-image, networkx and matplotlib). Press **Set up Python** once: it makes a private environment with those packages in the project's user data folder (`user://bake_venv`, outside the project) and Bake uses it automatically (on Mint/Ubuntu this needs `sudo apt install python3-venv` first). Bake runs in the background and writes `assets/maps/<id>/`; a map only appears in the game's menu once it has baked successfully.
-  - **Map Editor:** open a baked map and edit the merge itself in 3D, then decorate it. The course is shown with the game's sky, fog and light; middle-drag orbits, Shift+middle pans, wheel zooms, **F** frames, double-click a spot to fly to it. Three tools:
+  - **Map Editor:** open a baked map and edit the merge itself in 3D, then decorate it. The course is shown with the game's sky, fog and light; middle-drag orbits, Shift+middle pans, wheel zooms, **F** frames, double-click a spot to fly to it. Six tools (a brush ring shows the erase/restore radius and the fill footprint):
     - **Select (1)**: click a prop, then drag the gizmo to **move** (G, arrows), **rotate** (R, ring; Ctrl snaps to 15°) or **scale** (S, handle; drag up/down). Position/rotation/scale/colour are also in the panel; **Snap to ground** drops the prop onto the geometry below. **Delete** removes it, Ctrl+D duplicates, Ctrl+Z / Ctrl+Shift+Z undo.
     - **Place (2)**: pick a prop (tree, pine, palm, bush, rock, traffic cone, lamp post, sign), a colour, random yaw and size jitter, then click the course to stamp one (each click places a prop; **Add at view** stamps where the camera looks).
-    - **Erase (3)**: drag over baked geometry to erase individual triangles - floating scenery, z-fighting or leftover pieces - and the panel lists every baked surface (texture + class) so a whole surface can be hidden instead. Restore faces / Restore all undo it.
+    - **Erase (3)**: drag a brush over baked geometry to erase triangles - floating scenery, z-fighting or leftover pieces. **Brush / patch size** sets the radius.
+    - **Part (4)**: click one triangle and the whole connected piece around it goes (a tree, a sign, a floating chunk). Corners are welded by position, so it follows the real surface; pieces over 4,000 triangles are refused (use the brush) so a stray click cannot wipe the route.
+    - **Fill (5)**: click the course to lay a flat textured patch - a hole in the ground, a gap at a seam. It copies the clicked triangle's texture, UV mapping and road/off-road class, sits 6 cm above the surface and is `brush size * 2` across; **Fill texture** overrides the texture. **Remove patches** deletes them all.
+    - **Restore (6)**: paint erased triangles back in (the inverse of Erase). The panel also lists every baked surface (texture + class) so a whole surface can be hidden, plus **Restore faces** / **Restore all**.
 
-    Edits are written to `assets/maps/<id>/decor.json` with **Save** (Ctrl+S): `props` (type, pos, yaw in degrees, scale, tint), `hidden` (surface index -> erased face indices) and `hidden_surfaces`. `Track` reads it whenever the map loads, so the game shows exactly what the editor shows; re-baking the map keeps `decor.json`, but surface indices change, so re-check the clean-up after a re-bake.
+    Edits are written to `assets/maps/<id>/decor.json` with **Save** (Ctrl+S): `props` (type, pos, yaw in degrees, scale, tint), `hidden` (surface index -> erased face indices), `hidden_surfaces` and `patches` (texture, class, vertices, UVs, indices). `Track` reads it whenever the map loads - props spawn, patches are built into their own mesh and get collision, erased triangles and hidden surfaces are skipped - so the game shows exactly what the editor shows. Re-baking the map keeps `decor.json`, but surface indices change, so re-check the clean-up (and re-add patches, which store world positions) after a re-bake.
   - **Character Importer:** put a model inside the project (e.g. `res://import/<name>/`) and enter its path. Set the type (runner or kart driver), which way it faces, the height and the split mode:
     - `auto`: biped split from the silhouette.
     - `nodes`: one part per mesh node, using the node origins as pivots.

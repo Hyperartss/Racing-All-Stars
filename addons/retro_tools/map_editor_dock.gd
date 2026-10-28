@@ -10,18 +10,27 @@ extends HSplitContainer
 ##               rotate (R) ring, scale (S) handle. Delete removes, Ctrl+D duplicates.
 ##   Place (2)   click the course to stamp the palette prop; keeps stamping until you
 ##               pick another tool. Random yaw and size jitter are in the panel.
-##   Erase (3)   drag over baked geometry to erase triangles (floating scenery,
-##               z-fighting pieces, a stray wall). "Restore all" puts everything back.
+##   Erase (3)   drag a brush over baked geometry to erase triangles (floating scenery,
+##               z-fighting pieces, a stray wall). The brush radius is in the panel.
+##   Part (4)    click one triangle: the whole connected piece around it goes (a tree,
+##               a sign, a floating chunk). Huge pieces are refused - use the brush.
+##   Fill (5)    click the course to lay a textured patch (a hole in the ground, a gap at
+##               a seam). It copies the clicked triangle's texture and UV mapping, so it
+##               blends in; size = brush size, texture can be overridden.
+##   Restore (6) paint erased triangles back in (the inverse of Erase).
 ##
 ## Everything is written to assets/maps/<id>/decor.json, which Track reads when the
-## map loads (props spawn, erased triangles are skipped). Re-baking the map leaves
-## decor.json alone, but surface indices change, so check the map after a re-bake.
+## map loads (props spawn, patches are built, erased triangles are skipped). Re-baking
+## the map leaves decor.json alone, but surface indices change, so check the map after
+## a re-bake.
 ## Undo: Ctrl+Z / Ctrl+Shift+Z. Save: Ctrl+S.
 
 const MAPS := "res://content/maps/"
 const DECOR := "decor.json"
 const UNDO_LIMIT := 60
 const CELL := 16.0                 ## pick grid cell size in metres
+const MAX_PART := 4000            ## Delete part refuses pieces bigger than this
+const MAX_PART_SURFACE := 60000   ## ... and surfacing bigger than this is too slow to weld
 
 # --- data ---------------------------------------------------------------------------
 var map_id := ""
@@ -40,8 +49,8 @@ var cam_yaw := 0.9
 var cam_pitch := 0.55
 var cam_dist := 140.0
 var focus := Vector3.ZERO
-var _drag := 0                     ## 0 none, 1 orbit, 2 pan, 3 gizmo, 4 erase stroke
-var _erased := false
+var _drag := 0                     ## 0 none, 1 orbit, 2 pan, 3 gizmo, 4 brush stroke
+var _stroke_dirty := false
 
 # Gizmo: arrows for move, a Y ring for rotate, a Y handle for scale.
 var gizmo_root: Node3D
@@ -59,7 +68,7 @@ var _g_start := Vector3.ZERO
 var _g_prev_angle := 0.0
 var _g_pivot := Vector3.ZERO
 var sel_box: MeshInstance3D
-var erase_marker: MeshInstance3D
+var brush_marker: MeshInstance3D
 
 # --- picking ------------------------------------------------------------------------
 var _cells := {}                   ## Vector2i cell -> PackedInt32Array of (surface, face)
@@ -86,6 +95,8 @@ var tint_pick: ColorPickerButton
 var jitter_spin: SpinBox
 var random_yaw: CheckBox
 var props_label: Label
+var brush_radius: SpinBox
+var patch_pick: OptionButton
 var pos_spins: Array[SpinBox] = []
 var yaw_spin: SpinBox
 var scale_spin: SpinBox
@@ -149,10 +160,12 @@ func _build_left() -> void:
 	_muted(v, "Click the course to place a prop. Drag the gizmo to move (G), rotate (R) or scale (S). Middle-drag orbits, Shift+middle pans, wheel zooms, F frames, double-click a spot to fly to it.")
 
 	# --- tools ---------------------------------------------------------------------
-	row = HBoxContainer.new()
-	v.add_child(row)
+	var grid := GridContainer.new()
+	grid.columns = 3
+	v.add_child(grid)
 	var group := ButtonGroup.new()
-	for t in [["select", "Select (1)"], ["place", "Place (2)"], ["erase", "Erase (3)"]]:
+	for t in [["select", "Select (1)"], ["place", "Place (2)"], ["erase", "Erase (3)"],
+			["part", "Part (4)"], ["fill", "Fill (5)"], ["restore", "Restore (6)"]]:
 		var b := Button.new()
 		b.text = String(t[1])
 		b.toggle_mode = true
@@ -161,11 +174,31 @@ func _build_left() -> void:
 		b.tooltip_text = {
 			"select": "Pick a prop and edit it with the gizmo",
 			"place": "Click the course to add the palette prop",
-			"erase": "Drag over baked geometry to erase triangles",
+			"erase": "Drag a brush over baked geometry to erase triangles",
+			"part": "Click a triangle: delete its whole connected piece",
+			"fill": "Click the course to lay a textured patch there",
+			"restore": "Paint erased triangles back in",
 		}.get(String(t[0]), "")
 		b.toggled.connect(_on_tool_toggled.bind(String(t[0])))
-		row.add_child(b)
+		grid.add_child(b)
 		tool_btns.append(b)
+
+	var g2 := GridContainer.new()
+	g2.columns = 2
+	v.add_child(g2)
+	_lbl(g2, "Brush / patch size")
+	brush_radius = SpinBox.new()
+	brush_radius.min_value = 0.25
+	brush_radius.max_value = 40.0
+	brush_radius.step = 0.25
+	brush_radius.value = 4.0
+	brush_radius.tooltip_text = "Erase and Restore brush radius, and Fill patch size, in metres"
+	brush_radius.value_changed.connect(_on_brush_radius_changed)
+	g2.add_child(brush_radius)
+	_lbl(g2, "Fill texture")
+	patch_pick = OptionButton.new()
+	patch_pick.tooltip_text = "Texture for Fill patches - \"Same as surface\" copies the clicked one"
+	g2.add_child(patch_pick)
 
 	row = HBoxContainer.new()
 	v.add_child(row)
@@ -255,6 +288,7 @@ func _build_left() -> void:
 		"Skip the whole surface: it disappears from the course and its collision"
 	_btn(row, "Restore faces", restore_faces).tooltip_text = "Undo every erased triangle"
 	_btn(row, "Restore all", restore_all).tooltip_text = "Unhide everything (faces and surfaces)"
+	_btn(row, "Remove patches", remove_patches).tooltip_text = "Delete every fill patch"
 
 	status_label = _muted(v, "Pick a map.")
 
@@ -352,17 +386,25 @@ func _build_right() -> void:
 	sel_box.visible = false
 	preview_root.add_child(sel_box)
 
-	erase_marker = MeshInstance3D.new()
-	var em := StandardMaterial3D.new()
-	em.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	em.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	em.albedo_color = Color(1.0, 0.25, 0.2, 0.7)
-	em.cull_mode = BaseMaterial3D.CULL_DISABLED
-	em.no_depth_test = true
-	erase_marker.material_override = em
-	erase_marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	erase_marker.visible = false
-	preview_root.add_child(erase_marker)
+	# Brush cursor: a flat ring in the surface, so the erase radius is visible.
+	brush_marker = MeshInstance3D.new()
+	var ring := TorusMesh.new()
+	ring.inner_radius = 0.94
+	ring.outer_radius = 1.0
+	ring.rings = 32
+	ring.ring_segments = 4
+	brush_marker.mesh = ring
+	var brm := StandardMaterial3D.new()
+	brm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	brm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	brm.albedo_color = Color(1.0, 0.92, 0.35, 0.85)
+	brm.cull_mode = BaseMaterial3D.CULL_DISABLED
+	brm.no_depth_test = true
+	brush_marker.material_override = brm
+	brush_marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	brush_marker.visible = false
+	preview_root.add_child(brush_marker)
+	preview_holder.mouse_exited.connect(func() -> void: _hide_brush())
 
 	_update_camera()
 
@@ -501,6 +543,8 @@ func load_map(id: String) -> void:
 		decor["hidden"] = {}
 	if not (decor.get("hidden_surfaces") is Array):
 		decor["hidden_surfaces"] = []
+	if not (decor.get("patches") is Array):
+		decor["patches"] = []
 
 	# Fresh preview of the course.
 	if track != null and is_instance_valid(track):
@@ -515,6 +559,7 @@ func load_map(id: String) -> void:
 	sel = -1
 	_grid_built = false
 	_build_pick_grid()
+	_refresh_patch_textures()
 	_frame()
 	_refresh_surface_list()
 	_refresh_selection_ui()
@@ -555,6 +600,9 @@ func _clean_decor() -> Dictionary:
 	var hs: Array = decor.get("hidden_surfaces", [])
 	if not hs.is_empty():
 		out["hidden_surfaces"] = hs
+	var patches: Variant = decor.get("patches", [])
+	if patches is Array and not (patches as Array).is_empty():
+		out["patches"] = patches
 	return out
 
 
@@ -597,17 +645,23 @@ func _on_mode_toggled(on: bool, m: String) -> void:
 
 func _set_tool(t: String) -> void:
 	tool = t
-	for i in tool_btns.size():
-		tool_btns[i].set_pressed_no_signal(["select", "place", "erase"][i] == t)
-	if erase_marker != null:
-		erase_marker.visible = false
+	var ids := ["select", "place", "erase", "part", "fill", "restore"]
+	for i in mini(tool_btns.size(), ids.size()):
+		tool_btns[i].set_pressed_no_signal(ids[i] == t)
+	_hide_brush()
 	match t:
 		"select":
 			status("Select: click a prop, then drag the gizmo. Delete removes it.")
 		"place":
 			status("Place: click the course to stamp %s." % TrackProps.LABEL.get(palette, palette))
 		"erase":
-			status("Erase: drag over geometry to hide triangles. Release to apply.")
+			status("Erase: drag the brush over geometry to hide triangles. Release to apply.")
+		"part":
+			status("Part: click a triangle to delete its whole connected piece (max %d triangles)." % MAX_PART)
+		"fill":
+			status("Fill: click the course to lay a %.1f m patch there." % brush_radius.value)
+		"restore":
+			status("Restore: drag the brush over erased spots to bring them back.")
 
 
 func _set_gizmo_mode(m: String) -> void:
@@ -746,7 +800,13 @@ func _refresh_selection_ui() -> void:
 
 func _update_prop_label() -> void:
 	if props_label != null:
-		props_label.text = "%d props  -  %d erased tris" % [_props().size(), _hidden_face_count()]
+		props_label.text = "%d props  -  %d erased tris  -  %d patches" % [_props().size(),
+			_hidden_face_count(), _patch_count()]
+
+
+func _patch_count() -> int:
+	var p: Variant = decor.get("patches", [])
+	return (p as Array).size() if p is Array else 0
 
 
 func _on_pos_spin(_v: float, axis: int) -> void:
@@ -942,6 +1002,8 @@ func _restore(snapshot: String) -> void:
 		decor["hidden"] = {}
 	if not (decor.get("hidden_surfaces") is Array):
 		decor["hidden_surfaces"] = []
+	if not (decor.get("patches") is Array):
+		decor["patches"] = []
 	_committed = JSON.stringify(decor)
 	_last_tag = ""
 	if track != null:
@@ -1568,12 +1630,18 @@ func _on_preview_input(e: InputEvent) -> void:
 				_drag_gizmo(_view_rel(e.relative), _view_pos(e.position))
 				preview_holder.accept_event()
 			4:
-				var hit := _pick_triangle(_view_pos(e.position))
+				var vp := _view_pos(e.position)
+				var hit := _pick_triangle(vp)
 				if not hit.is_empty():
-					_erase(hit)
+					_show_brush(hit.pos, hit.normal)
+					if tool == "restore":
+						_brush_show(hit.pos, brush_radius.value)
+					else:
+						_brush_hide(hit.pos, brush_radius.value)
 				preview_holder.accept_event()
 			_:
 				_hover_gizmo(_view_pos(e.position))
+				_update_brush_hover(_view_pos(e.position))
 
 
 func _start_drag(p: Vector2) -> void:
@@ -1593,12 +1661,30 @@ func _start_drag(p: Vector2) -> void:
 				return
 			add_prop_at(hit.pos)
 			status("Placed a %s - click again for more, or pick Select to edit it." % TrackProps.LABEL.get(palette, palette))
-		"erase":
+		"part":
+			_drag = 0
+			var hp := _pick_triangle(vp)
+			if hp.is_empty():
+				status("Click a triangle to delete the piece it belongs to.")
+			else:
+				_delete_part(hp)
+		"fill":
+			_drag = 0
+			var hf := _pick_triangle(vp)
+			if hf.is_empty():
+				status("Click the course to fill a patch there.")
+			else:
+				_make_patch(hf)
+		"erase", "restore":
 			_drag = 4
-			_erased = false
-			var hit2 := _pick_triangle(vp)
-			if not hit2.is_empty():
-				_erase(hit2)
+			_stroke_dirty = false
+			var hb := _pick_triangle(vp)
+			if not hb.is_empty():
+				_show_brush(hb.pos, hb.normal)
+				if tool == "restore":
+					_brush_show(hb.pos, brush_radius.value)
+				else:
+					_brush_hide(hb.pos, brush_radius.value)
 		_:
 			# Select: a prop pick wins, otherwise clicking empty space deselects.
 			_drag = 0
@@ -1616,46 +1702,361 @@ func _end_drag() -> void:
 		_commit()
 		_refresh_selection_ui()
 	elif _drag == 4:
-		if _erased and track != null:
+		if _stroke_dirty and track != null:
 			track.apply_decor(decor)
 			_refresh_surface_list()
 			_refresh_selection_ui()
 			_update_gizmo()
-			_commit("erase")
-			status("Erased %d triangles so far." % _hidden_face_count())
-		if erase_marker != null:
-			erase_marker.visible = false
+			_commit()
+			status("%d erased triangles, %d patches." % [_hidden_face_count(), _patch_count()])
 	_drag = 0
 	gizmo_drag = -1
 	_update_gizmo_colors()
-	_hover_gizmo(_view_pos(preview_holder.get_local_mouse_position()))
+	var last := _last_view_pos()
+	_hover_gizmo(last)
+	_update_brush_hover(last)
 
 
-func _erase(hit: Dictionary) -> void:
+# --- brush / part / patch -------------------------------------------------------------
+
+## Erases every triangle whose closest point is inside the brush.
+func _brush_hide(centre: Vector3, radius: float) -> int:
+	var hid: Dictionary = decor.get("hidden", {})
+	var n := 0
+	for pair in _brush_faces(centre, radius):
+		var si := int(pair[0])
+		var f := int(pair[1])
+		var key := str(si)
+		if not hid.has(key):
+			hid[key] = []
+		var list: Array = hid[key]
+		if list.has(f):
+			continue
+		list.append(f)
+		n += 1
+	if n > 0:
+		decor["hidden"] = hid
+		_stroke_dirty = true
+		_update_prop_label()
+	return n
+
+
+## Paints erased triangles inside the brush back in.
+func _brush_show(centre: Vector3, radius: float) -> int:
+	var hid: Dictionary = decor.get("hidden", {})
+	if hid.is_empty():
+		return 0
+	var r2 := radius * radius
+	var removed := 0
+	for k in hid.keys():
+		var si := int(k)
+		var keep: Array = []
+		for fv in (hid[k] as Array):
+			var f := int(fv)
+			var tri := _face(si, f)
+			if tri.size() >= 3 and _closest_on_tri(tri[0], tri[1], tri[2], centre).distance_squared_to(centre) <= r2:
+				removed += 1
+			else:
+				keep.append(fv)
+		if keep.is_empty():
+			hid.erase(k)
+		else:
+			hid[k] = keep
+	if removed > 0:
+		decor["hidden"] = hid
+		_stroke_dirty = true
+		_update_prop_label()
+	return removed
+
+
+## (surface, face) pairs inside the brush, from the pick grid.
+func _brush_faces(centre: Vector3, radius: float) -> Array:
+	var out: Array = []
+	if not _grid_built:
+		return out
+	var r2 := radius * radius
+	var c0 := Vector2i(floori((centre.x - radius) / CELL), floori((centre.z - radius) / CELL))
+	var c1 := Vector2i(floori((centre.x + radius) / CELL), floori((centre.z + radius) / CELL))
+	var seen := {}
+	for cx in range(c0.x, c1.x + 1):
+		for cz in range(c0.y, c1.y + 1):
+			var arr: PackedInt32Array = _cells.get(Vector2i(cx, cz), PackedInt32Array())
+			for i in range(0, arr.size(), 2):
+				_brush_face(int(arr[i]), int(arr[i + 1]), centre, r2, seen, out)
+	for i in range(0, _big.size(), 2):
+		_brush_face(int(_big[i]), int(_big[i + 1]), centre, r2, seen, out)
+	return out
+
+
+func _brush_face(si: int, f: int, centre: Vector3, r2: float, seen: Dictionary, out: Array) -> void:
+	var key := Vector2i(si, f)
+	if seen.has(key):
+		return
+	seen[key] = true
+	if _is_hidden_face(si, f):
+		return
+	var tri := _face(si, f)
+	if tri.size() < 3:
+		return
+	if _closest_on_tri(tri[0], tri[1], tri[2], centre).distance_squared_to(centre) <= r2:
+		out.append([si, f])
+
+
+## Closest point on a triangle to `p` (Ericson, Real-Time Collision Detection).
+static func _closest_on_tri(a: Vector3, b: Vector3, c: Vector3, p: Vector3) -> Vector3:
+	var ab := b - a
+	var ac := c - a
+	var ap := p - a
+	var d1 := ab.dot(ap)
+	var d2 := ac.dot(ap)
+	if d1 <= 0.0 and d2 <= 0.0:
+		return a
+	var bp := p - b
+	var d3 := ab.dot(bp)
+	var d4 := ac.dot(bp)
+	if d3 >= 0.0 and d4 <= d3:
+		return b
+	var vc := d1 * d4 - d3 * d2
+	if vc <= 0.0 and d1 >= 0.0 and d3 <= 0.0:
+		return a + ab * (d1 / (d1 - d3))
+	var cp := p - c
+	var d5 := ab.dot(cp)
+	var d6 := ac.dot(cp)
+	if d6 >= 0.0 and d5 <= d6:
+		return c
+	var vb := d5 * d2 - d1 * d6
+	if vb <= 0.0 and d2 >= 0.0 and d6 <= 0.0:
+		return a + ac * (d2 / (d2 - d6))
+	var va := d3 * d6 - d5 * d4
+	if va <= 0.0 and (d4 - d3) >= 0.0 and (d5 - d6) >= 0.0:
+		return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))
+	var den := 1.0 / (va + vb + vc)
+	return a + ab * (vb * den) + ac * (vc * den)
+
+
+## Deletes the whole connected piece around the clicked triangle (a tree, a sign, a
+## floating chunk). The bake is triangle soup with unshared vertices, so corners are
+## welded by position (1 cm) to find what actually touches. Pieces bigger than
+## MAX_PART are refused so a stray click on the route cannot wipe it.
+func _delete_part(hit: Dictionary) -> void:
 	var si := int(hit.surface)
 	var f := int(hit.face)
+	var g: Dictionary = track.surface_geo.get(si, {})
+	if g.is_empty():
+		return
+	var idx: PackedInt32Array = g.idx
+	var pos: PackedVector3Array = g.pos
+	var faces := idx.size() / 3
+	if f < 0 or f >= faces:
+		return
+	if faces > MAX_PART_SURFACE:
+		status("This surface has %d triangles - the Part tool is too slow on it; use the erase brush or hide the surface." % faces)
+		return
+	var welded := {}
+	for ff in faces:
+		for k in 3:
+			var p := pos[idx[ff * 3 + k]]
+			var key := Vector3i(roundi(p.x * 100.0), roundi(p.y * 100.0), roundi(p.z * 100.0))
+			var arr: PackedInt32Array = welded.get(key, PackedInt32Array())
+			arr.append(ff)
+			welded[key] = arr
+	var seen := {f: true}
+	var stack: Array[int] = [f]
+	var part := PackedInt32Array()
+	while not stack.is_empty():
+		var cur: int = stack.pop_back()
+		part.append(cur)
+		if part.size() > MAX_PART:
+			status("That piece is over %d triangles - too big for Part; use the erase brush or hide the whole surface." % MAX_PART)
+			return
+		for k in 3:
+			var p2 := pos[idx[cur * 3 + k]]
+			var key2 := Vector3i(roundi(p2.x * 100.0), roundi(p2.y * 100.0), roundi(p2.z * 100.0))
+			for nf in (welded[key2] as PackedInt32Array):
+				if not seen.has(nf):
+					seen[nf] = true
+					stack.append(nf)
 	var hid: Dictionary = decor.get("hidden", {})
 	var key := str(si)
 	if not hid.has(key):
 		hid[key] = []
 	var list: Array = hid[key]
-	if list.has(f):
-		return
-	list.append(f)
+	for ff in part:
+		if not list.has(ff):
+			list.append(ff)
 	decor["hidden"] = hid
-	_erased = true
-	# Red marker on the triangle being erased; the mesh itself updates on release.
-	var tri := _face(si, f)
-	if tri.size() == 3:
-		var im := ImmediateMesh.new()
-		im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, null)
-		im.surface_add_vertex(tri[0])
-		im.surface_add_vertex(tri[1])
-		im.surface_add_vertex(tri[2])
-		im.surface_end()
-		erase_marker.mesh = im
-		erase_marker.visible = true
-	_update_prop_label()
+	track.apply_decor(decor)
+	_refresh_surface_list()
+	_refresh_selection_ui()
+	_update_gizmo()
+	_commit()
+	status("Deleted a connected piece of %d triangles (%d erased in total)." % [part.size(), _hidden_face_count()])
+
+
+## Lays a flat patch over the clicked triangle. It copies that triangle's texture and
+## UV mapping, so it blends into the course, and sits just above the surface. Patches
+## are stored under decor "patches" and built by Track (mesh + collision).
+func _make_patch(hit: Dictionary) -> void:
+	var si := int(hit.surface)
+	var f := int(hit.face)
+	var g: Dictionary = track.surface_geo.get(si, {})
+	if g.is_empty():
+		return
+	var pos: PackedVector3Array = g.pos
+	var idx: PackedInt32Array = g.idx
+	var uvs: PackedVector2Array = g.get("uv", PackedVector2Array())
+	if f * 3 + 2 >= idx.size():
+		return
+	var ia := idx[f * 3]
+	var ib := idx[f * 3 + 1]
+	var ic := idx[f * 3 + 2]
+	var a := pos[ia]
+	var b := pos[ib]
+	var c := pos[ic]
+	var ua := uvs[ia] if ia < uvs.size() else Vector2.ZERO
+	var ub := uvs[ib] if ib < uvs.size() else Vector2.ZERO
+	var uc := uvs[ic] if ic < uvs.size() else Vector2.ZERO
+	var n := (b - a).cross(c - a).normalized()
+	var u := (b - a).normalized()
+	u = u - n * u.dot(n)
+	if u.length_squared() < 1e-6:
+		u = Vector3.RIGHT
+	u = u.normalized()
+	var v := n.cross(u)
+	var r := maxf(brush_radius.value, 0.25)
+	var base: Vector3 = hit.pos
+	var corners := [base - u * r - v * r, base + u * r - v * r, base + u * r + v * r, base - u * r + v * r]
+	var verts: Array = []
+	var tuv: Array = []
+	for p in corners:
+		var q: Vector3 = p + n * 0.06
+		verts.append([_r(q.x), _r(q.y), _r(q.z)])
+		var t := _bary_uv(p, a, b, c, ua, ub, uc)
+		tuv.append([_r(t.x, 0.0001), _r(t.y, 0.0001)])
+	var texture := String(g.get("texture", ""))
+	if patch_pick != null and patch_pick.selected >= 0:
+		var chosen := String(patch_pick.get_item_metadata(patch_pick.selected))
+		if chosen != "":
+			texture = chosen
+	if texture.begins_with("conn"):
+		# Connector surfaces use a blend shader; a patch takes the connector's far texture.
+		var conns: Dictionary = track.data.get("connectors", {})
+		texture = String((conns.get(texture, {}) as Dictionary).get("b", ""))
+	var patches: Variant = decor.get("patches", [])
+	if not (patches is Array):
+		patches = []
+	# A patch over the road keeps road grip; everything else is drivable off-road.
+	var cls := "road" if String(g.get("class", "off")) == "road" else "off"
+	patches.append({
+		"texture": texture, "alpha": bool(g.get("alpha", false)), "class": cls,
+		"nrm": [_r(n.x, 0.0001), _r(n.y, 0.0001), _r(n.z, 0.0001)],
+		"verts": verts, "uv": tuv, "idx": [0, 1, 2, 0, 2, 3],
+	})
+	decor["patches"] = patches
+	track.apply_decor(decor)
+	_refresh_surface_list()
+	_refresh_selection_ui()
+	_update_gizmo()
+	_commit()
+	status("Filled a %.1f m patch with %s." % [r * 2.0, texture if texture != "" else "a flat colour"])
+
+
+## Affine UV at `p` for the plane of triangle (a, b, c) - extends outside the triangle.
+static func _bary_uv(p: Vector3, a: Vector3, b: Vector3, c: Vector3,
+		ua: Vector2, ub: Vector2, uc: Vector2) -> Vector2:
+	var v0 := b - a
+	var v1 := c - a
+	var v2 := p - a
+	var d00 := v0.dot(v0)
+	var d01 := v0.dot(v1)
+	var d11 := v1.dot(v1)
+	var d20 := v2.dot(v0)
+	var d21 := v2.dot(v1)
+	var den := d00 * d11 - d01 * d01
+	if absf(den) < 1e-10:
+		return ua
+	var vv := (d11 * d20 - d01 * d21) / den
+	var ww := (d00 * d21 - d01 * d20) / den
+	return ua * (1.0 - vv - ww) + ub * vv + uc * ww
+
+
+func _refresh_patch_textures() -> void:
+	if patch_pick == null:
+		return
+	var keep := ""
+	if patch_pick.selected >= 0:
+		keep = String(patch_pick.get_item_metadata(patch_pick.selected))
+	patch_pick.clear()
+	patch_pick.add_item("Same as surface")
+	patch_pick.set_item_metadata(0, "")
+	if track != null and not track.data.is_empty():
+		var seen := {}
+		for s in track.data.surfaces:
+			var t := String(s.get("texture", ""))
+			if t == "" or t.begins_with("conn") or seen.has(t):
+				continue
+			seen[t] = true
+			patch_pick.add_item(t.get_basename().replace(".png", ""))
+			patch_pick.set_item_metadata(patch_pick.item_count - 1, t)
+	for i in patch_pick.item_count:
+		if String(patch_pick.get_item_metadata(i)) == keep:
+			patch_pick.select(i)
+			break
+
+
+func remove_patches() -> void:
+	if _patch_count() == 0:
+		status("No fill patches to remove.")
+		return
+	decor["patches"] = []
+	_apply_decor()
+	_commit()
+	status("Removed every fill patch.")
+
+
+func _show_brush(centre: Vector3, normal: Vector3) -> void:
+	if brush_marker == null:
+		return
+	var r := maxf(brush_radius.value, 0.2)
+	var up := normal.normalized()
+	if up.length_squared() < 0.5:
+		up = Vector3.UP
+	var ref := Vector3.RIGHT if absf(up.dot(Vector3.RIGHT)) < 0.9 else Vector3.BACK
+	var x := ref.cross(up).normalized()
+	var z := x.cross(up).normalized()
+	brush_marker.global_transform = Transform3D(Basis(x, up, z).scaled(Vector3.ONE * r), centre + up * 0.06)
+	brush_marker.visible = true
+
+
+func _hide_brush() -> void:
+	if brush_marker != null:
+		brush_marker.visible = false
+
+
+func _on_brush_radius_changed(_v: float) -> void:
+	if preview_holder != null and preview_holder.get_global_rect().has_point(get_global_mouse_position()):
+		_update_brush_hover(_last_view_pos())
+
+
+func _last_view_pos() -> Vector2:
+	if preview_holder == null:
+		return Vector2.ZERO
+	return _view_pos(preview_holder.get_local_mouse_position())
+
+
+## Brush cursor while hovering with Erase / Restore / Fill.
+func _update_brush_hover(vp: Vector2) -> void:
+	if tool != "erase" and tool != "restore" and tool != "fill":
+		_hide_brush()
+		return
+	if track == null or cam == null:
+		_hide_brush()
+		return
+	var hit := _pick_triangle(vp)
+	if hit.is_empty():
+		_hide_brush()
+	else:
+		_show_brush(hit.pos, hit.normal)
 
 
 func _shortcut_input(e: InputEvent) -> void:
@@ -1697,6 +2098,15 @@ func _shortcut_input(e: InputEvent) -> void:
 			accept_event()
 		KEY_3:
 			_set_tool("erase")
+			accept_event()
+		KEY_4:
+			_set_tool("part")
+			accept_event()
+		KEY_5:
+			_set_tool("fill")
+			accept_event()
+		KEY_6:
+			_set_tool("restore")
 			accept_event()
 		KEY_DELETE, KEY_BACKSPACE:
 			delete_selected()
