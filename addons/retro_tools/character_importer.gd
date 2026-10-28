@@ -807,8 +807,8 @@ func export(paint: Dictionary, rig_dir: String = "res://assets/rigs/", char_dir:
 	if FileAccess.file_exists(path):
 		old = JSON.parse_string(FileAccess.open(path, FileAccess.READ).get_as_text())
 	if old is Dictionary:
-		# keep hand-tuned fields of an existing definition
-		for k in ["stats", "params", "seat", "default_kart"]:
+		# keep hand-tuned fields of an existing definition (clips from the Animation Editor too)
+		for k in ["stats", "params", "seat", "default_kart", "animations"]:
 			if old.has(k):
 				def[k] = old[k]
 	_write_json(path, def, true)

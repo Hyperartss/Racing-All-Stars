@@ -1,3 +1,4 @@
+@tool
 class_name KartVisual
 extends RacerVisual
 ## Kart + driver, both vertex-animated:
@@ -46,11 +47,16 @@ func _ready() -> void:
 	var h := float(driver.meta.get("aabb_max", [0, 0.85, 0])[1]) - float(driver.meta.get("aabb_min", [0, 0, 0])[1])
 	if driver_scale <= 0.0:
 		driver_scale = 0.85 / maxf(h, 0.05)
+	init_anim()
 
 
 func update_visual(s: AnimState, delta: float) -> void:
 	super(s, delta)
 	var k := clampf(absf(s.speed) / maxf(s.max_speed, 0.01), 0.0, 1.5)
+	# Custom clips (Animation Editor): the seated driver can breathe and lean with speed.
+	advance_clip(&"drive", delta, 0.5 + clampf(k, 0.0, 1.0))
+	advance_clip(&"idle", delta, 1.0)
+	advance_clip(&"hit", delta, 1.0)
 
 	# --- kart ----------------------------------------------------------------
 	spin -= s.speed * delta            # angle * radius = distance; divided per wheel below
@@ -94,11 +100,43 @@ func update_visual(s: AnimState, delta: float) -> void:
 	driver.apply()
 
 
+## The seated pose the driver starts from (without steering / speed changes).
+## The Animation Editor seeds new kart clips with it, so a custom clip starts from
+## the same seated pose the game uses instead of a standing rest pose.
+static func default_drive_pose(arm_rest: float = 0.0) -> Dictionary:
+	return {
+		"hips": {"rot": Vector3(0, 0, 0)},
+		"torso": {"rot": Vector3(-0.12, 0, 0)},
+		"head": {"rot": Vector3(0.05, 0, 0)},
+		"leg_upper_l": {"rot": Vector3(1.45, 0.05, 0)},
+		"leg_upper_r": {"rot": Vector3(1.45, -0.05, 0)},
+		"leg_lower_l": {"rot": Vector3(-1.0, 0, 0)},
+		"leg_lower_r": {"rot": Vector3(-1.0, 0, 0)},
+		"arm_upper_l": {"rot": Vector3(0, -1.05, 0.95 + arm_rest)},
+		"arm_upper_r": {"rot": Vector3(0, 1.05, -0.95 - arm_rest)},
+		"arm_lower_l": {"rot": Vector3(0, -0.7, 0)},
+		"arm_lower_r": {"rot": Vector3(0, 0.7, 0)},
+	}
+
+
 ## Seated pose from the standing (T-pose) model, plus steering and look.
 func _pose_driver(s: AnimState, k: float) -> void:
 	driver.reset_pose()
 	var st := steer_vis / 0.45            # -1..1
 	var hit := 1.0 if s.hit > 0.0 else 0.0
+	# Animation Editor clips: "drive" (or "idle") poses the driver, "hit" blends in.
+	var base := clip_pose(&"drive")
+	if base.is_empty():
+		base = clip_pose(&"idle")
+	if not base.is_empty():
+		var hit_pose := clip_pose(&"hit")
+		if hit_pose.is_empty():
+			blend_pose(driver, [base], [1.0])
+		else:
+			blend_pose(driver, [base, hit_pose], [1.0 - hit, hit])
+		# Keep the driver looking into the corner on top of the authored pose.
+		driver.add_rot(&"head", Vector3(0.0, head_yaw, -st * 0.08))
+		return
 	# Hips/torso: lean into the corner, slight forward hunch at speed.
 	driver.set_rot(&"hips", Vector3(0, 0, -lean * 1.2))
 	driver.set_rot(&"torso", Vector3(-0.12 - 0.08 * k, st * 0.12, st * 0.10))

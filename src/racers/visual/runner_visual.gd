@@ -1,3 +1,4 @@
+@tool
 class_name RunnerVisual
 extends RacerVisual
 ## Vertex animation for any on-foot (biped) racer: idle, run cycle (swing and
@@ -7,8 +8,11 @@ extends RacerVisual
 ## arms modelled in a T-pose are brought down automatically.
 
 @export var rig_path := "res://assets/rigs/sonic.json"
-const PARTS := ["body", "head", "arm_upper_l", "arm_lower_l", "arm_upper_r", "arm_lower_r",
-	"leg_upper_l", "leg_lower_l", "leg_upper_r", "leg_lower_r", "tail"]
+## Standard run timing at full speed. The Animation Editor uses these to bake the
+## built-in run into a clip that loops seamlessly; keep them in sync with the
+## formulas in update_visual().
+const RUN_FULL_CLIP_RATE := 2.5
+const RUN_FULL_PHASE_RATE := 17.0
 
 var rig: VertexRig
 var phase := 0.0          ## run cycle phase (radians)
@@ -26,11 +30,18 @@ func _ready() -> void:
 	add_child(rig)
 	rig.load_rig(rig_path)
 	_arm_rest = PI * 0.47 if rig.rest_pose() == "t_pose" else 0.0
+	init_anim()
 
 
 func update_visual(s: AnimState, delta: float) -> void:
 	super(s, delta)
 	var k := clampf(absf(s.speed) / maxf(s.max_speed, 0.01), 0.0, 1.6)
+
+	# Custom clips (Animation Editor): idle plays naturally, run follows the cadence.
+	advance_clip(&"idle", delta, 1.0)
+	advance_clip(&"run", delta, 0.5 + 2.0 * clampf(k, 0.0, 1.5))
+	advance_clip(&"jump", delta, 1.0)
+	advance_clip(&"hit", delta, 1.0)
 
 	# State weights, smoothed so transitions blend.
 	var tgt_jump := 1.0 if (s.jumping or (not s.grounded and s.vertical_speed > -2.0 and s.jumping)) else 0.0
@@ -45,28 +56,44 @@ func update_visual(s: AnimState, delta: float) -> void:
 	phase += delta * (2.0 + 15.0 * k) if s.grounded else delta * 4.0
 	spin += delta * (16.0 + 10.0 * k) * w_jump
 
-	var idle := _pose_idle()
-	var run := _pose_run(k, s.dashing)
-	var jump := _pose_jump()
-	var hit := _pose_hit()
+	var idle := pose_or_clip(&"idle", _rest_arms(_pose_idle()))
+	var run := pose_or_clip(&"run", _rest_arms(_pose_run(k, s.dashing)))
+	var jump := pose_or_clip(&"jump", _rest_arms(_pose_jump()))
+	var hit := pose_or_clip(&"hit", _rest_arms(_pose_hit()))
 
 	rig.reset_pose()
 	var w_air := w_jump
 	var w_h := w_hit
 	var w_r := w_run * (1.0 - w_air) * (1.0 - w_h)
 	var w_i := (1.0 - w_run) * (1.0 - w_air) * (1.0 - w_h)
-	for p in PARTS:
-		var e: Vector3 = idle.get(p, Vector3.ZERO) * w_i + run.get(p, Vector3.ZERO) * w_r \
-			+ jump.get(p, Vector3.ZERO) * w_air * (1.0 - w_h) + hit.get(p, Vector3.ZERO) * w_h
-		if p == "arm_upper_l":
-			e.z += _arm_rest
-		elif p == "arm_upper_r":
-			e.z -= _arm_rest
-		rig.set_rot(p, e)
+	blend_pose(rig, [idle, run, jump, hit], [w_i, w_r, w_air * (1.0 - w_h), w_h])
 	var bob := absf(sin(phase)) * 0.035 * clampf(k, 0.0, 1.0) * w_r \
 		+ sin(time * 2.2) * 0.006 * w_i + 0.12 * w_air * (1.0 - w_h)
-	rig.set_offset(&"body", Vector3(0, bob, 0))
+	# Baked clips carry their own offsets; don't add the procedural bob on top.
+	if anim != null:
+		var w_clip := 0.0
+		if has_clip(&"idle"):
+			w_clip += w_i
+		if has_clip(&"run"):
+			w_clip += w_r
+		if has_clip(&"jump"):
+			w_clip += w_air * (1.0 - w_h)
+		if has_clip(&"hit"):
+			w_clip += w_h
+		bob *= clampf(1.0 - w_clip, 0.0, 1.0)
+	rig.add_offset(&"body", Vector3(0, bob, 0))
 	rig.apply()
+
+
+## T-pose rigs: bring the arms down in the code poses. Authored clips already
+## contain the arms they want, so only the fallbacks are adjusted.
+func _rest_arms(p: Dictionary) -> Dictionary:
+	if is_zero_approx(_arm_rest):
+		return p
+	var out := p.duplicate()
+	out["arm_upper_l"] = out.get("arm_upper_l", Vector3.ZERO) + Vector3(0.0, 0.0, _arm_rest)
+	out["arm_upper_r"] = out.get("arm_upper_r", Vector3.ZERO) + Vector3(0.0, 0.0, -_arm_rest)
+	return out
 
 
 func _pose_idle() -> Dictionary:

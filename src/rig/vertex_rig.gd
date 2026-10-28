@@ -160,6 +160,12 @@ func has_part(name: StringName) -> bool:
 	return _find(name) >= 0
 
 
+## The rig's own name for a pose part (alias-resolved), "" if the rig has no such part.
+func resolve_name(name: StringName) -> StringName:
+	var i := _find(name)
+	return StringName(part_names[i]) if i >= 0 else &""
+
+
 func _find(name: StringName) -> int:
 	var i: int = part_index.get(name, -1)
 	if i >= 0:
@@ -194,6 +200,20 @@ func set_offset(name: StringName, off: Vector3) -> void:
 	var i := _find(name)
 	if i >= 0:
 		part_offset[i] = off
+
+
+## Add to the current offset (e.g. a procedural bob on top of an authored pose).
+func add_offset(name: StringName, off: Vector3) -> void:
+	var i := _find(name)
+	if i >= 0:
+		part_offset[i] = part_offset[i] + off
+
+
+## Add an extra local rotation on top of the current pose (e.g. a head turn).
+func add_rot(name: StringName, euler: Vector3) -> void:
+	var i := _find(name)
+	if i >= 0:
+		part_rot[i] = part_rot[i] * Basis.from_euler(euler)
 
 
 func pivot_of(name: StringName) -> Vector3:
@@ -257,6 +277,47 @@ func apply() -> void:
 		arrays[Mesh.ARRAY_INDEX] = s.idx
 		_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		_mesh.surface_set_material(_mesh.get_surface_count() - 1, s.mat)
+
+
+## Index of the part whose triangles the ray hits first (editor viewport picking),
+## or -1 when it misses. Uses the deformed positions, so it matches what is drawn.
+func pick(origin: Vector3, dir: Vector3) -> int:
+	var best := -1
+	var best_t := INF
+	for s in _surf:
+		if s.hidden:
+			continue
+		var pos: PackedVector3Array = s.pos
+		var idx: PackedInt32Array = s.idx
+		var pa: PackedInt32Array = s.pa
+		for i in range(0, idx.size() - 2, 3):
+			var ia := idx[i]
+			var t := _ray_triangle(origin, dir, pos[ia], pos[idx[i + 1]], pos[idx[i + 2]])
+			if t > 0.0 and t < best_t:
+				best_t = t
+				best = pa[ia]
+	return best
+
+
+static func _ray_triangle(o: Vector3, d: Vector3, a: Vector3, b: Vector3, c: Vector3) -> float:
+	# Moeller-Trumbore; returns the ray distance or -1.
+	var e1 := b - a
+	var e2 := c - a
+	var p := d.cross(e2)
+	var det := e1.dot(p)
+	if absf(det) < 1e-7:
+		return -1.0
+	var inv := 1.0 / det
+	var tvec := o - a
+	var u := tvec.dot(p) * inv
+	if u < 0.0 or u > 1.0:
+		return -1.0
+	var q := tvec.cross(e1)
+	var v := d.dot(q) * inv
+	if v < 0.0 or u + v > 1.0:
+		return -1.0
+	var t := e2.dot(q) * inv
+	return t if t > 1e-4 else -1.0
 
 
 ## Debug/verification: how far vertices currently are from rest (max distance).

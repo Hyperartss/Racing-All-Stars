@@ -5,10 +5,40 @@
 	"rig": "res://assets/rigs/sonic.json",
 	"colour": "#3030ff",
 	"paint": {
-		"fur": {"label": "Fur", "surface": "", "src": "#3030ff", "tol": 0.08, "default": "#3030ff",
-			"presets": ["#3030ff", "#f0d020", "#202020", "#30c040", "#e02020", "#c040ff"]},
-		"shoes": {"label": "Shoes", "surface": "", "src": "#f00000", "tol": 0.05, "default": "#f00000",
-			"presets": ["#f00000", "#2050ff", "#20c060", "#f0f0f0", "#202020"]}
+		"fur": {
+			"label": "Fur",
+			"surface": "",
+			"src": "#3030ff",
+			"tol": 0.08,
+			"default": "#3030ff",
+			"presets": [
+				"#3030ff",
+				"#f0d020",
+				"#202020",
+				"#30c040",
+				"#e02020",
+				"#c040ff"
+			]
+		},
+		"shoes": {
+			"label": "Shoes",
+			"surface": "",
+			"src": "#f00000",
+			"tol": 0.05,
+			"default": "#f00000",
+			"presets": [
+				"#f00000",
+				"#2050ff",
+				"#20c060",
+				"#f0f0f0",
+				"#202020"
+			]
+		}
 	},
-	"stats": {"speed": 5, "accel": 4, "handling": 3}
+	"stats": {
+		"speed": 5.0,
+		"accel": 4.0,
+		"handling": 3.0
+	},
+	"animations": {}
 }

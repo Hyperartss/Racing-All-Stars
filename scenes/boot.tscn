@@ -1,6 +1,8 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://cyex6t3m72n6o"]
 
-[ext_resource type="Script" path="res://src/core/boot.gd" id="1"]
+[ext_resource type="Script" uid="uid://bv2d72jwpi5ik" path="res://src/core/boot.gd" id="1"]
 
-[node name="Boot" type="Node3D"]
+[node name="Boot" type="Node3D" unique_id=993358368]
 script = ExtResource("1")
+
+[node name="Node" type="Node" parent="." unique_id=1503399555]
