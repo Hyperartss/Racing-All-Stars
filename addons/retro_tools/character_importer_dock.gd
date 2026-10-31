@@ -44,6 +44,9 @@ func _ready() -> void:
 	_btn(row, "Load", load_model)
 	_btn(row, "Analyse", analyse)
 	_btn(row, "Export", export)
+	var icons := _btn(row, "Icons", make_icons)
+	icons.tooltip_text = "Draw a face icon for every character in content/characters\n" + \
+		"(Export already does it for the character being imported)"
 	v.add_child(_label("Groups and roles (\"auto\" = split by position):"))
 	groups_box = GridContainer.new()
 	groups_box.columns = 2
@@ -73,11 +76,12 @@ func _opts(items: Array) -> OptionButton:
 	return o
 
 
-func _btn(p: Control, t: String, cb: Callable) -> void:
+func _btn(p: Control, t: String, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = t
 	b.pressed.connect(cb)
 	p.add_child(b)
+	return b
 
 
 func out(t: String) -> void:
@@ -137,6 +141,16 @@ func analyse() -> void:
 	out("Parts (vertices): %s" % imp.role_counts())
 	for n in imp.notes:
 		out("Note: " + n)
+
+
+## Face icons for the characters that are already in the project.
+func make_icons() -> void:
+	var n := CharacterImporter.make_icons()
+	out("Rendered %d character face icon(s) into content/characters/." % n)
+	if n == 0:
+		out("Nothing to do - there are no characters with a rig there yet.")
+	if Engine.is_editor_hint():
+		EditorInterface.get_resource_filesystem().scan()
 
 
 func export() -> void:

@@ -215,9 +215,17 @@ func _build_characters() -> void:
 		var c: Dictionary = RacerTypes.characters()[cid]
 		var b := Button.new()
 		b.toggle_mode = true
-		b.custom_minimum_size = Vector2(138, 34)
+		b.custom_minimum_size = Vector2(138, 40)
 		b.text = "%s\n%s" % [c.get("name", cid), String(RacerTypes.TYPES.get(c.get("type", "runner"), {}).get("label", c.get("type", ""))).to_upper()]
 		b.add_theme_font_size_override("font_size", 11)
+		# Face icon drawn by the Character Importer; older characters have none.
+		var icon_path := String(c.get("icon", ""))
+		if icon_path != "" and ResourceLoader.exists(icon_path):
+			var tex: Texture2D = load(icon_path)
+			if tex:
+				b.icon = tex
+				b.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+				b.add_theme_constant_override("h_separation", 4)
 		b.pressed.connect(_pick_character.bind(cid))
 		b.focus_entered.connect(_pick_character.bind(cid))
 		grid.add_child(b)

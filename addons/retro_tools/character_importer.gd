@@ -794,8 +794,12 @@ func export(paint: Dictionary, rig_dir: String = "res://assets/rigs/", char_dir:
 	var tex_map := save_textures(rig_dir + "tex/", id)
 	var rig := build_rig(tex_map)
 	_write_json(rig_dir + id + ".json", rig, false)
+	# Face thumbnail for the character menu, drawn from the rig itself.
+	var icon_path := char_dir + id + ".png"
+	var icon := RigIcon.render(rig, 32)
 	var def := {
 		"id": id, "name": display_name, "type": type, "rig": rig_dir + id + ".json",
+		"icon": icon_path,
 		"colour": paint.values()[0].src if not paint.is_empty() else "#c0c0c0",
 		"paint": paint, "stats": TYPE_DEFAULTS[type].stats.duplicate(),
 	}
@@ -812,7 +816,42 @@ func export(paint: Dictionary, rig_dir: String = "res://assets/rigs/", char_dir:
 			if old.has(k):
 				def[k] = old[k]
 	_write_json(path, def, true)
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(char_dir))
+	icon.save_png(ProjectSettings.globalize_path(icon_path))
 	return path
+
+
+## Re-renders the face icon of every character in `char_dir` and adds it to the
+## definition - for characters imported before icons existed. Returns how many
+## were written.
+static func make_icons(char_dir: String = "res://content/characters/") -> int:
+	var n := 0
+	var d := DirAccess.open(char_dir)
+	if d == null:
+		return 0
+	var files := Array(d.get_files())
+	files.sort()
+	for f in files:
+		if not String(f).ends_with(".json"):
+			continue
+		var path := char_dir + String(f)
+		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+		if not (parsed is Dictionary):
+			continue
+		var def: Dictionary = parsed
+		var rig_path := String(def.get("rig", ""))
+		if rig_path == "" or not FileAccess.file_exists(rig_path):
+			continue
+		var rig: Variant = JSON.parse_string(FileAccess.get_file_as_string(rig_path))
+		if not (rig is Dictionary):
+			continue
+		var icon_path := char_dir + String(def.get("id", String(f).get_basename())) + ".png"
+		var icon := RigIcon.render(rig, 32)
+		icon.save_png(ProjectSettings.globalize_path(icon_path))
+		def["icon"] = icon_path
+		_write_json(path, def, true)
+		n += 1
+	return n
 
 
 ## Copies/merges the textures to `dir` as PNGs; returns key -> res:// path.
