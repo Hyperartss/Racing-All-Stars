@@ -12,8 +12,17 @@ extends MeshInstance3D
 ##
 ## Vertices on a seam between two parts carry a second part and a 50/50 blend so
 ## elbows and knees do not crack open when bent.
+##
+## The two legs are tilted slightly outward when the feet would otherwise touch
+## (imported models often have both shoes modelled as one block across the centre
+## line). It is a base under every pose, so no pose - built-in, authored clip or the
+## Animation Editor preview - can push the shoes through each other again.
 
 const PAINT_SHADER := preload("res://src/rig/rig_paint.gdshader")
+## Gap kept between the feet, as a fraction of the rig's height, and the most the legs
+## are tilted outward to reach it (radians).
+const FOOT_GAP := 0.06
+const MAX_LEG_SPLAY := 0.15
 ## Alternative part names, so any rig can drive any animator (e.g. a runner rig
 ## with "foot_l" or a driver rig with "hips"/"torso" instead of "body").
 const ALIASES := {
@@ -36,6 +45,9 @@ var part_rot: Array[Basis] = []            ## local rotation about the pivot
 var part_offset: Array[Vector3] = []       ## local translation (parent space)
 var part_xform: Array[Transform3D] = []    ## result, rig space
 var meta := {}
+var leg_splay := 0.0                       ## outward tilt of each leg, radians (0 = none)
+var _splay_l := -1                         ## part tilted outward, left leg
+var _splay_r := -1                         ## part tilted outward, right leg
 
 var _surf: Array[Dictionary] = []          ## rest data + materials per surface
 var _mesh := ArrayMesh.new()
@@ -82,6 +94,10 @@ func load_rig(path: String) -> void:
 		})
 	mesh = _mesh
 	_loaded = true
+	# Cut the welded faces first: until each foot owns only its own shoe, the gap
+	# between them cannot be measured (each side still holds corners of both).
+	_cut_welds()
+	_measure_leg_splay()
 	apply()
 
 
@@ -140,6 +156,268 @@ func set_surface_visible(surface_filter: String, on: bool) -> void:
 		if String(s.tex).contains(surface_filter):
 			s.hidden = not on
 	apply()
+
+
+## "l" / "r" / centre: which side of the body a part sits on, from its name.
+static func _side(name: String) -> int:
+	if name.ends_with("_l"):
+		return -1
+	if name.ends_with("_r"):
+		return 1
+	return 0
+
+
+## Imported models often have the two shoes modelled as one welded mass across the
+## centre line - a sole or ankle ring running from one foot to the other. Every face
+## of that bridge has a corner in each foot, so whichever foot it is given, it stays
+## strung between them: the shoes cannot separate, and turning one foot drags half of
+## the other shoe through it.
+##
+## The fix is a cut, not a reassignment: a face that straddles the centre plane is
+## split along that plane, and each side keeps its own piece, given the part that side
+## names. The two feet then share neither a face nor a vertex. Nothing moves at rest -
+## the halves still meet exactly - but the seam opens as soon as the feet move apart.
+##
+## It runs when a rig is exported (so the file itself is right, in the game and in the
+## Animation Editor) and again when one is loaded, which catches rigs that predate it
+## and costs nothing on a rig that was already cut.
+static func cut_welds(surfaces: Array, names: PackedStringArray, height: float) -> void:
+	var index := {}
+	for i in names.size():
+		index[names[i]] = i
+	var eps := 0.002 * maxf(height, 0.01)
+	for si in surfaces.size():
+		var s: Dictionary = surfaces[si]
+		var pos := (s.pos as PackedVector3Array).duplicate()
+		var nrm := (s.nrm as PackedVector3Array).duplicate()
+		var uv := (s.uv as PackedVector2Array).duplicate()
+		var pa := (s.pa as PackedInt32Array).duplicate()
+		var pb := (s.pb as PackedInt32Array).duplicate()
+		var w := (s.w as PackedFloat32Array).duplicate()
+		var idx := (s.idx as PackedInt32Array).duplicate()
+		if pos.is_empty() or idx.is_empty():
+			continue
+		if pb.size() < pos.size():
+			pb.resize(pos.size())
+		if w.size() < pos.size():
+			w.resize(pos.size())
+		# 1. a seam point shared by the left and right of a limb stops following both.
+		for i in pos.size():
+			if w[i] > 0.0 and _side(names[pa[i]]) * _side(names[pb[i]]) < 0:
+				w[i] = 0.0
+		# 2. every face that straddles the centre plane is cut along it.
+		var out := PackedInt32Array()
+		var cut := false
+		for t in range(0, idx.size() - 2, 3):
+			var tri := [idx[t], idx[t + 1], idx[t + 2]]
+			var lo := 0
+			var hi := 0
+			var moves := false
+			for c in tri:
+				var sd := _side(names[pa[c]])
+				lo = mini(lo, sd)
+				hi = maxi(hi, sd)
+				if sd != 0 and pos[c].x * float(sd) < -eps:
+					moves = true
+			# Only a face that really spans the two sides is cut; one that sits on a
+			# single side is kept whole, however far its own side's letter decides.
+			if not (lo < 0 and hi > 0) and not moves:
+				out.append(tri[0]); out.append(tri[1]); out.append(tri[2])
+				continue
+			cut = true
+			for sd in [-1, 1]:
+				var piece := _clip_side(pos, nrm, uv, tri, sd, eps)
+				if piece.size() < 3:
+					continue
+				var part := _piece_part(names, index, pa, pos, tri, sd, eps)
+				for k in range(1, piece.size() - 1):
+					for v in [piece[0], piece[k], piece[k + 1]]:
+						out.append(pos.size())
+						pos.append(v.p)
+						nrm.append(v.n)
+						uv.append(v.t)
+						pa.append(part)
+						pb.append(part)
+						w.append(0.0)
+		if not cut:
+			continue
+		# 3. drop the vertices the cut left behind - a face whose corners were labelled
+		#    for the other foot is replaced by its two halves, so the old corners are
+		#    no longer drawn and must not keep a piece of the wrong shoe alive.
+		var used := {}
+		for vi in out:
+			used[vi] = true
+		var cpos := PackedVector3Array()
+		var cnrm := PackedVector3Array()
+		var cuv := PackedVector2Array()
+		var cpa := PackedInt32Array()
+		var cpb := PackedInt32Array()
+		var cw := PackedFloat32Array()
+		var remap := {}
+		for i in pos.size():
+			if used.has(i):
+				remap[i] = cpos.size()
+				cpos.append(pos[i])
+				cnrm.append(nrm[i])
+				cuv.append(uv[i])
+				cpa.append(pa[i])
+				cpb.append(pb[i])
+				cw.append(w[i])
+		for i in out.size():
+			out[i] = remap[out[i]]
+		s.pos = cpos
+		s.nrm = cnrm
+		s.uv = cuv
+		s.pa = cpa
+		s.pb = cpb
+		s.w = cw
+		s.idx = out
+
+
+## The cut as this rig needs it: applied to the surfaces in memory once they load.
+func _cut_welds() -> void:
+	var views: Array = []
+	for s in _surf:
+		views.append({"pos": s.rest_pos, "nrm": s.rest_nrm, "uv": s.uv, "idx": s.idx,
+			"pa": s.pa, "pb": s.pb, "w": s.w})
+	var h := float(meta.get("aabb_max", [0.0, 1.0, 0.0])[1]) - float(meta.get("aabb_min", [0.0, 0.0, 0.0])[1])
+	cut_welds(views, part_names, h)
+	for i in _surf.size():
+		var s: Dictionary = _surf[i]
+		var v: Dictionary = views[i]
+		s.rest_pos = v.pos
+		s.pos = (v.pos as PackedVector3Array).duplicate()
+		s.rest_nrm = v.nrm
+		s.nrm = (v.nrm as PackedVector3Array).duplicate()
+		s.uv = v.uv
+		s.pa = v.pa
+		s.pb = v.pb
+		s.w = v.w
+		s.idx = v.idx
+
+
+## The polygon one side keeps of a triangle cut at the centre plane. Corners on the
+## plane are copied into both sides, so the two halves never share a vertex.
+static func _clip_side(pos: PackedVector3Array, nrm: PackedVector3Array, uv: PackedVector2Array,
+		tri: Array, side: int, eps: float) -> Array:
+	var out: Array = []
+	var sgn := float(side)
+	for k in 3:
+		var ai: int = tri[k]
+		var bi: int = tri[(k + 1) % 3]
+		var ap := pos[ai]
+		var bp := pos[bi]
+		var inside_a := ap.x * sgn >= -eps
+		var inside_b := bp.x * sgn >= -eps
+		if inside_a:
+			out.append({"p": ap, "n": nrm[ai], "t": uv[ai]})
+		if inside_a != inside_b:
+			var d := bp.x - ap.x
+			if absf(d) > 1e-9:
+				var f := clampf(-ap.x / d, 0.0, 1.0)
+				var n := (nrm[ai].lerp(nrm[bi], f))
+				out.append({"p": ap.lerp(bp, f), "n": n.normalized() if n.length() > 0.000001 else nrm[ai],
+					"t": uv[ai].lerp(uv[bi], f)})
+	return out
+
+
+## The part a cut piece belongs to: the part its corners standing on that side name,
+## mirrored over when a corner was labelled with the other side's part.
+static func _piece_part(names: PackedStringArray, index: Dictionary, pa: PackedInt32Array,
+		pos: PackedVector3Array, tri: Array, side: int, eps: float) -> int:
+	var votes := {}
+	for c in tri:
+		if pos[c].x * float(side) > eps:
+			var p := _mirror(names, index, pa[c], side)
+			votes[p] = int(votes.get(p, 0)) + 1
+	if votes.is_empty():
+		return _mirror(names, index, pa[tri[0]], side)
+	var best: int = votes.keys()[0]
+	for p in votes:
+		if int(votes[p]) > int(votes[best]):
+			best = int(p)
+	return best
+
+
+## The same part on the other side of the body (`foot_l` -> `foot_r`), or the part
+## itself when it has no mirror.
+static func _mirror(names: PackedStringArray, index: Dictionary, part: int, side: int) -> int:
+	var n := String(names[part])
+	var want := "_l" if side < 0 else "_r"
+	if n.ends_with(want) or _side(n) == 0:
+		return part
+	var i: int = index.get(n.substr(0, n.length() - 2) + want, -1)
+	return i if i >= 0 else part
+
+
+## How far each leg has to tilt outward so the two feet stop touching, measured on the
+## rest geometry: the narrowest gap between the left and right lower leg decides. Rig
+## space is metres, so the extra half-gap each foot needs divided by the lever - from
+## the leg's top pivot down to that closest point - is the sine of the tilt. Rigs whose
+## feet already stand far enough apart keep `leg_splay` at 0 and look as authored.
+func _measure_leg_splay() -> void:
+	leg_splay = 0.0
+	_splay_l = -1
+	_splay_r = -1
+	var l := _find(&"foot_l")
+	if l < 0:
+		l = _find(&"leg_lower_l")
+	var r := _find(&"foot_r")
+	if r < 0:
+		r = _find(&"leg_lower_r")
+	if l < 0 or r < 0 or l == r:
+		return
+	var lift_l := _find(&"leg_upper_l")
+	var lift_r := _find(&"leg_upper_r")
+	if lift_l < 0:
+		lift_l = l
+	if lift_r < 0:
+		lift_r = r
+	# Narrowest gap between the two lower legs, band by band from the sole to the knee.
+	var bands := 12
+	var lo := INF
+	var hi := -INF
+	for s in _surf:
+		for i in s.pa.size():
+			if s.pa[i] == l or s.pa[i] == r:
+				var y: float = (s.rest_pos[i] as Vector3).y
+				lo = minf(lo, y)
+				hi = maxf(hi, y)
+	if not (lo < hi):
+		return
+	var lmax := PackedFloat32Array(); lmax.resize(bands)
+	var rmin := PackedFloat32Array(); rmin.resize(bands)
+	lmax.fill(-INF)
+	rmin.fill(INF)
+	for s in _surf:
+		for i in s.pa.size():
+			var p: Vector3 = s.rest_pos[i]
+			var b := clampi(int((p.y - lo) / (hi - lo) * bands), 0, bands - 1)
+			if s.pa[i] == l:
+				lmax[b] = maxf(lmax[b], p.x)
+			elif s.pa[i] == r:
+				rmin[b] = minf(rmin[b], p.x)
+	var gap := INF
+	var at := lo
+	for b in bands:
+		if lmax[b] == -INF or rmin[b] == INF:
+			continue
+		var g := rmin[b] - lmax[b]
+		if g < gap:
+			gap = g
+			at = lo + (hi - lo) * (b + 0.5) / float(bands)
+	if gap == INF:
+		return
+	var h := hi - lo
+	if meta.has("aabb_min") and meta.has("aabb_max"):
+		h = float(meta.aabb_max[1]) - float(meta.aabb_min[1])
+	var want := FOOT_GAP * maxf(h, hi - lo)
+	var lever := part_pivot[lift_l].y - at
+	if gap >= want or lever <= 0.0001:
+		return
+	leg_splay = minf(MAX_LEG_SPLAY, asin(clampf((want - gap) * 0.5 / lever, 0.0, 1.0)))
+	_splay_l = lift_l
+	_splay_r = lift_r
 
 
 ## "t_pose" (arms out sideways) or "arms_down", from the file or measured.
@@ -233,8 +511,13 @@ func _solve() -> void:
 	# Parents are always listed before children in the rig file.
 	for i in part_names.size():
 		var p := part_pivot[i]
+		var rot := part_rot[i]
+		if i == _splay_l:
+			rot = rot * Basis(Vector3.BACK, -leg_splay)
+		elif i == _splay_r:
+			rot = rot * Basis(Vector3.BACK, leg_splay)
 		var local := Transform3D(Basis.IDENTITY, part_offset[i] + p) \
-			* Transform3D(part_rot[i], Vector3.ZERO) \
+			* Transform3D(rot, Vector3.ZERO) \
 			* Transform3D(Basis.IDENTITY, -p)
 		var par := part_parent[i]
 		part_xform[i] = part_xform[par] * local if par >= 0 else local

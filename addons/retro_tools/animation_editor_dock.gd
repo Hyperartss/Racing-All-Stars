@@ -531,7 +531,7 @@ func _refresh_clip_list() -> void:
 		timeline.keys = []
 		timeline.queue_redraw()
 		time = 0.0
-		pose = _full_pose({})
+		pose = _full_pose(_default_pose())
 		_apply_live_pose()
 		_sync_pose_controls()
 		time_label.text = "0.00 / 1.00 s"
@@ -955,9 +955,18 @@ func _refresh_parts() -> void:
 	if rig.part_names.size() > 0:
 		part_list.select(0)
 		selected_part = String(rig.part_names[0])
-	pose = _full_pose({})
+	pose = _full_pose(_default_pose())
 	_sync_pose_controls()
 	_update_handles()
+
+
+## Pose the preview falls back to with no clip selected: a kart driver sits (the game
+## seats every driver), a runner stands at rest.
+func _default_pose() -> Dictionary:
+	if rig == null or String(char_def.get("type", "runner")) != "kart":
+		return {}
+	var arm_rest := -PI * 0.5 if rig.rest_pose() == "arms_down" else 0.0
+	return KartVisual.default_drive_pose(arm_rest)
 
 
 func _full_pose(p: Dictionary) -> Dictionary:
@@ -1080,7 +1089,7 @@ func _reset_part() -> void:
 
 func _reset_all() -> void:
 	_set_play(false)
-	pose = _full_pose({})
+	pose = _full_pose(_default_pose())
 	_apply_live_pose()
 	_sync_pose_controls()
 	if auto_key.button_pressed:

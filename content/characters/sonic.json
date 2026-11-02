@@ -1,0 +1,45 @@
+{
+	"colour": "#3a00ff",
+	"icon": "res://content/characters/sonic.png",
+	"id": "sonic",
+	"name": "sonc",
+	"paint": {
+		"purple": {
+			"default": "#3a00ff",
+			"label": "Purple",
+			"presets": [
+				"#3a00ff",
+				"#e02020",
+				"#2050ff",
+				"#20b040",
+				"#f0d020",
+				"#f08020"
+			],
+			"src": "#3a00ff",
+			"surface": "",
+			"tol": 0.06
+		},
+		"red": {
+			"default": "#dc0000",
+			"label": "Red",
+			"presets": [
+				"#dc0000",
+				"#2050ff",
+				"#20b040",
+				"#f0d020",
+				"#f08020",
+				"#c040ff"
+			],
+			"src": "#dc0000",
+			"surface": "",
+			"tol": 0.06
+		}
+	},
+	"rig": "res://assets/rigs/sonic.json",
+	"stats": {
+		"accel": 4.0,
+		"handling": 4.0,
+		"speed": 4.0
+	},
+	"type": "runner"
+}

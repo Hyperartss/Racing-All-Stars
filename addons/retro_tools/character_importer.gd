@@ -7,7 +7,10 @@ extends RefCounted
 ## 1. load_source()  - collect every mesh surface (positions, normals, UVs, texture)
 ## 2. groups         - how the model is split into parts:
 ##      "auto"     : one group, split by position into a biped (head, torso, hips,
-##                   upper/lower arms and legs) from the front silhouette
+##                   upper/lower arms and legs, and a foot per side) from the front
+##                   silhouette. Below the crotch the side alone decides the leg, so
+##                   the left and right legs never end up in the same part, and each
+##                   foot gets its own part with the ankle as its pivot
 ##      "nodes"    : one group per mesh node (models built from separate pieces,
 ##                   e.g. Sonic R); node origins become the pivots
 ##      "surfaces" : one group per mesh surface (OBJ groups/materials)
@@ -17,19 +20,29 @@ extends RefCounted
 ##                     measure the body and place the joints (editable afterwards)
 ## 4. build_rig()    - rig dictionary in the same format as assets/rigs/*.json
 ## 5. detect_paint() - colour zones the menu can recolour
-## 6. export()       - assets/rigs/<id>.json (+ textures) and content/characters/<id>.json
+## 6. export()       - assets/rigs/<id>.json (+ textures) and content/characters/<id>.json,
+##                     which for a kart driver also carries its default clips (drive,
+##                     hit) so it sits in the game and in the Animation Editor
 ##
 ## No skeleton, no skin, no animation clips: the game animates the parts itself.
 
 const ROLES := ["hips", "torso", "head", "arm_upper_l", "arm_lower_l", "arm_upper_r", "arm_lower_r",
-	"leg_upper_l", "leg_lower_l", "leg_upper_r", "leg_lower_r", "tail"]
+	"leg_upper_l", "leg_lower_l", "foot_l", "leg_upper_r", "leg_lower_r", "foot_r", "tail"]
 const PARENT := {
 	"hips": "", "torso": "hips", "head": "torso", "tail": "hips",
 	"arm_upper_l": "torso", "arm_lower_l": "arm_upper_l",
 	"arm_upper_r": "torso", "arm_lower_r": "arm_upper_r",
-	"leg_upper_l": "hips", "leg_lower_l": "leg_upper_l",
-	"leg_upper_r": "hips", "leg_lower_r": "leg_upper_r",
+	"leg_upper_l": "hips", "leg_lower_l": "leg_upper_l", "foot_l": "leg_lower_l",
+	"leg_upper_r": "hips", "leg_lower_r": "leg_upper_r", "foot_r": "leg_lower_r",
 }
+## Knee height as a fraction of the crotch height (see _place_joints).
+const KNEE := 0.6
+## Ankle height as a fraction of the knee height: where the shin ends and the foot -
+## the whole shoe, up to its collar - begins. Each foot is its own part so it can be
+## turned or nudged on its own instead of dragging the shin with it. On the shipped
+## models the shoe's collar ring sits at 0.65-0.75 of the knee height, so 0.7 keeps
+## the shoe whole; lower splits the sole off the shoe and leaves it with the shin.
+const ANKLE := 0.7
 const FACINGS := {"-Z": 0.0, "+Z": 180.0, "-X": -90.0, "+X": 90.0}
 const SPLITS := ["auto", "nodes", "surfaces"]
 const TYPE_DEFAULTS := {
@@ -449,8 +462,8 @@ func _place_joints() -> void:
 	for s in [["_l", -1.0], ["_r", 1.0]]:
 		var sx: float = s[1]
 		j["leg_upper" + s[0]] = Vector3(sx * lx, cr, z)
-		j["leg_lower" + s[0]] = Vector3(sx * lx, cr * 0.6, z)
-		j["foot" + s[0]] = Vector3(sx * lx, 0.0, z)
+		j["leg_lower" + s[0]] = Vector3(sx * lx, cr * KNEE, z)
+		j["foot" + s[0]] = Vector3(sx * lx, cr * KNEE * ANKLE, z)
 		if m.pose == "t_pose":
 			var shx := float(m.shoulder_x) * H
 			var sy := float(m.shoulder_y) * H
@@ -494,30 +507,50 @@ func _auto_role(p: Vector3) -> String:
 	var j := joints
 	if p.y >= (j.head as Vector3).y:
 		return "head"
-	var best := "torso"
-	var best_d := INF
 	var q := Vector2(p.x, p.y)
-	var th := float(measure.get("torso_half", 0.1)) * height
-	# torso capsule: hips..neck on the centre line
-	var d_torso := _seg_dist(q, Vector2(0, (j.hips as Vector3).y - 0.02 * height), Vector2(0, (j.head as Vector3).y)) - th
-	best_d = d_torso
 	var limb_r := 0.02 * height
+	var crotch := float(measure.get("crotch", 0.42)) * height
+	# Below the crotch the body is only legs, and the side alone picks which one. A
+	# nearest-pivot race ties at the centre line, so the inner surface of both legs
+	# used to end up in one part (or in the hips), which fused the two legs together.
+	# Below the ankle the foot is its own part (foot_l / foot_r), pivoted at the ankle.
+	if p.y < crotch:
+		var side := "_l" if p.x < 0.0 else "_r"
+		var knee: float = (j["leg_lower" + side] as Vector3).y
+		var ankle: float = (j["foot" + side] as Vector3).y
+		var la: Vector3 = j["leg_upper" + side]
+		var lb: Vector3 = j["leg_lower" + side]
+		var lc: Vector3 = j["foot" + side]
+		var d_leg := minf(_seg_dist(q, Vector2(la.x, la.y), Vector2(lb.x, lb.y)),
+			_seg_dist(q, Vector2(lb.x, lb.y), Vector2(lc.x, 0.0))) - limb_r
+		# A hand hanging beside the knee (arms modelled down) keeps its arm.
+		var aa: Vector3 = j["arm_upper" + side]
+		var ab: Vector3 = j["arm_lower" + side]
+		var ac: Vector3 = j["hand" + side]
+		var d_upper := _seg_dist(q, Vector2(aa.x, aa.y), Vector2(ab.x, ab.y))
+		var d_lower := _seg_dist(q, Vector2(ab.x, ab.y), Vector2(ac.x, ac.y))
+		if minf(d_upper, d_lower) - limb_r < d_leg:
+			return ("arm_upper" if d_upper <= d_lower else "arm_lower") + side
+		if p.y < ankle:
+			return "foot" + side
+		return ("leg_upper" if p.y >= knee else "leg_lower") + side
+	# Above the crotch: torso capsule from the crotch to the neck, with the arms where
+	# they leave the body.
+	var th := float(measure.get("torso_half", 0.1)) * height
+	var best := "torso"
+	var best_d := _seg_dist(q, Vector2(0, crotch), Vector2(0, (j.head as Vector3).y)) - th
 	for s in ["_l", "_r"]:
-		for limb in [["arm_upper", "arm_lower", "hand"], ["leg_upper", "leg_lower", "foot"]]:
-			var a: Vector3 = j[limb[0] + s]
-			var b: Vector3 = j[limb[1] + s]
-			var c: Vector3 = j[limb[2] + s]
-			var d1 := _seg_dist(q, Vector2(a.x, a.y), Vector2(b.x, b.y)) - limb_r
-			var d2 := _seg_dist(q, Vector2(b.x, b.y), Vector2(c.x, c.y)) - limb_r
-			if d1 < best_d:
-				best_d = d1
-				best = limb[0] + s
-			if d2 < best_d:
-				best_d = d2
-				best = limb[1] + s
-	# arms only above the crotch in a T-pose; legs never above the hips
-	if best.begins_with("leg") and p.y > (j.hips as Vector3).y + 0.02 * height:
-		best = "torso"
+		var a: Vector3 = j["arm_upper" + s]
+		var b: Vector3 = j["arm_lower" + s]
+		var c: Vector3 = j["hand" + s]
+		var d1 := _seg_dist(q, Vector2(a.x, a.y), Vector2(b.x, b.y)) - limb_r
+		var d2 := _seg_dist(q, Vector2(b.x, b.y), Vector2(c.x, c.y)) - limb_r
+		if d1 < best_d:
+			best_d = d1
+			best = "arm_upper" + s
+		if d2 < best_d:
+			best_d = d2
+			best = "arm_lower" + s
 	if best == "torso" and p.y < (j.torso as Vector3).y:
 		best = "hips"
 	return best
@@ -609,20 +642,71 @@ func build_rig(tex_map: Dictionary = {}) -> Dictionary:
 		surfaces.append({"texture": tex_map.get(key, key), "alpha": "scissor", "cull": false,
 			"pos": Array(pos), "nrm": Array(nrm), "uv": Array(uv), "idx": Array(idx),
 			"pa": Array(pa), "pb": Array(pa), "w": []})
-	_seams(surfaces)
-	var pose_name := String(measure.get("pose", "arms_down"))
-	if index.has("arm_upper_l") and index.has("arm_lower_l"):
-		var d: Vector3 = joints.arm_lower_l - joints.arm_upper_l
-		pose_name = "t_pose" if absf(d.x) > absf(d.y) else "arms_down"
+	_cut_centre(surfaces, roles)
+	_seams(surfaces, roles)
 	return {"name": id, "parts": parts, "surfaces": surfaces, "meta": {
 		"source": source_path, "imported_with": "Character Importer", "scale": scale,
-		"rest_pose": pose_name, "split": split,
+		"rest_pose": rest_pose_name(), "split": split,
 		"aabb_min": [snappedf(lo.x, 0.0001), snappedf(lo.y, 0.0001), snappedf(lo.z, 0.0001)],
 		"aabb_max": [snappedf(hi.x, 0.0001), snappedf(hi.y, 0.0001), snappedf(hi.z, 0.0001)]}}
 
 
-## A vertex position shared by two parts follows both 50/50 (no cracks at joints).
-func _seams(surfaces: Array) -> void:
+## Cuts a model whose two shoes are welded across the centre line into two feet, in
+## the exported rig itself, so the file works as it is - the game, the Animation Editor
+## and any other tool - instead of being patched when it loads. The cut only splits
+## faces that straddle the centre plane; no geometry is thrown away. See
+## VertexRig.cut_welds, which older rigs get on load.
+func _cut_centre(surfaces: Array, roles: PackedStringArray) -> void:
+	var views: Array = []
+	for s in surfaces:
+		var n: int = s.pa.size()
+		var pos := PackedVector3Array(); pos.resize(n)
+		var nrm := PackedVector3Array(); nrm.resize(n)
+		var uv := PackedVector2Array(); uv.resize(n)
+		for i in n:
+			pos[i] = Vector3(s.pos[i * 3], s.pos[i * 3 + 1], s.pos[i * 3 + 2])
+			nrm[i] = Vector3(s.nrm[i * 3], s.nrm[i * 3 + 1], s.nrm[i * 3 + 2])
+			uv[i] = Vector2(s.uv[i * 2], s.uv[i * 2 + 1])
+		views.append({"pos": pos, "nrm": nrm, "uv": uv, "idx": PackedInt32Array(s.idx),
+			"pa": PackedInt32Array(s.pa), "pb": PackedInt32Array(s.pb),
+			"w": PackedFloat32Array(s.w)})
+	VertexRig.cut_welds(views, roles, height)
+	for i in surfaces.size():
+		var s: Dictionary = surfaces[i]
+		var v: Dictionary = views[i]
+		s.pos = _flat3(v.pos)
+		s.nrm = _flat3(v.nrm)
+		s.uv = _flat2(v.uv)
+		s.pa = Array(v.pa)
+		s.pb = Array(v.pb)
+		s.w = Array(v.w)
+		s.idx = Array(v.idx)
+
+
+## A packed vector array back to the flat float list the rig file stores.
+static func _flat3(a: PackedVector3Array) -> Array:
+	var out: Array = []
+	out.resize(a.size() * 3)
+	for i in a.size():
+		out[i * 3] = a[i].x
+		out[i * 3 + 1] = a[i].y
+		out[i * 3 + 2] = a[i].z
+	return out
+
+
+static func _flat2(a: PackedVector2Array) -> Array:
+	var out: Array = []
+	out.resize(a.size() * 2)
+	for i in a.size():
+		out[i * 2] = a[i].x
+		out[i * 2 + 1] = a[i].y
+	return out
+
+
+## A vertex position shared by two parts follows both 50/50 (no cracks at joints),
+## except between the left and right of the same limb: those two copies keep their own
+## part, so a shared inner-leg point cannot pull both legs together.
+func _seams(surfaces: Array, roles: PackedStringArray) -> void:
 	var parts_at := {}
 	for s in surfaces:
 		for k in s.pa.size():
@@ -637,14 +721,43 @@ func _seams(surfaces: Array) -> void:
 		for k in s.pa.size():
 			var key := Vector3i(roundi(s.pos[k * 3] * 200), roundi(s.pos[k * 3 + 1] * 200), roundi(s.pos[k * 3 + 2] * 200))
 			var ps: Dictionary = parts_at[key]
-			if ps.size() > 1:
-				var other := 1 << 30
-				for q in ps:
-					if q != s.pa[k]:
-						other = mini(other, q)
+			if ps.size() < 2:
+				continue
+			var other := 1 << 30
+			for q in ps:
+				if q != s.pa[k] and _seam_blend(String(roles[q]), String(roles[s.pa[k]])):
+					other = mini(other, int(q))
+			if other < (1 << 30):
 				s.pb[k] = other
 				w[k] = 0.5
 		s.w = w
+
+
+## "l" / "r" for a left/right part, "" for a part on the centre line.
+static func _side_of(role: String) -> String:
+	if role.ends_with("_l"):
+		return "l"
+	if role.ends_with("_r"):
+		return "r"
+	return ""
+
+
+## A seam joins two parts unless they are the two sides of the same limb (leg_upper_l
+## and leg_upper_r, or a left hand sharing a point with the right leg): averaging those
+## is what made the legs move as one piece.
+static func _seam_blend(a: String, b: String) -> bool:
+	var sa := _side_of(a)
+	return not (sa != "" and sa != _side_of(b))
+
+
+## "t_pose" (arms out sideways) or "arms_down", from the placed shoulder and elbow
+## joints. The kart seated pose needs it to lift arms that hang down.
+func rest_pose_name() -> String:
+	var out := String(measure.get("pose", "arms_down"))
+	if joints.has("arm_upper_l") and joints.has("arm_lower_l"):
+		var d: Vector3 = joints.arm_lower_l - joints.arm_upper_l
+		out = "t_pose" if absf(d.x) > absf(d.y) else "arms_down"
+	return out
 
 
 ## Texture identity of a chunk: its texture path (+ opacity map), or its flat colour.
@@ -815,6 +928,11 @@ func export(paint: Dictionary, rig_dir: String = "res://assets/rigs/", char_dir:
 		for k in ["stats", "params", "seat", "default_kart", "animations"]:
 			if old.has(k):
 				def[k] = old[k]
+	# A kart driver sits: a new kart character gets its own default clips (seated
+	# "drive" and "hit"), so the Animation Editor opens on the pose the game uses.
+	# Clips already saved for the character are the author's work and are kept.
+	if type == "kart" and not def.has("animations"):
+		def["animations"] = default_animations()
 	_write_json(path, def, true)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(char_dir))
 	icon.save_png(ProjectSettings.globalize_path(icon_path))
@@ -869,6 +987,45 @@ func save_textures(dir: String, prefix: String) -> Dictionary:
 		img.save_png(ProjectSettings.globalize_path(path))
 		out[key] = path
 		n += 1
+	return out
+
+
+## Default animation set of a kart driver - its own, not the runner's idle/run/jump/
+## hit. "drive" holds the seated pose the game seats every driver in and "hit" the
+## hit-stun flinch; both are static poses (steering, leaning and the hop are layered on
+## top by KartVisual), so a new kart character opens in the Animation Editor already
+## sitting, with every part keyable.
+func default_animations() -> Dictionary:
+	var arm_rest := -PI * 0.5 if rest_pose_name() == "arms_down" else 0.0
+	var hit_len := 0.5
+	var drive_keys := [{"t": 0.0, "pose": _pose_json(KartVisual.default_drive_pose(arm_rest))}]
+	var hit_keys: Array = []
+	for i in 13:
+		var t := hit_len * float(i) / 12.0
+		hit_keys.append({"t": snappedf(t, 0.001),
+			"pose": _pose_json(KartVisual.default_hit_pose(arm_rest, t))})
+	return {
+		"drive": {"length": 1.0, "loop": true, "fps": 24.0, "keys": drive_keys},
+		"hit": {"length": hit_len, "loop": false, "fps": 24.0, "keys": hit_keys},
+	}
+
+
+## A pose dictionary (part -> Vector3 or {rot, off}) as the key data RigAnim reads.
+static func _pose_json(pose: Dictionary) -> Dictionary:
+	var out := {}
+	for part in pose:
+		var v: Variant = pose[part]
+		var rot := Vector3.ZERO
+		var off := Vector3.ZERO
+		if v is Vector3:
+			rot = v
+		elif v is Dictionary:
+			rot = v.get("rot", Vector3.ZERO)
+			off = v.get("off", Vector3.ZERO)
+		var rec := {"rot": [snappedf(rot.x, 0.0001), snappedf(rot.y, 0.0001), snappedf(rot.z, 0.0001)]}
+		if not off.is_zero_approx():
+			rec["off"] = [snappedf(off.x, 0.0001), snappedf(off.y, 0.0001), snappedf(off.z, 0.0001)]
+		out[String(part)] = rec
 	return out
 
 

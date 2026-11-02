@@ -161,5 +161,7 @@ func export() -> void:
 	var paint := imp.detect_paint()
 	var p := imp.export(paint)
 	out("Wrote %s and res://assets/rigs/%s.json (paint zones: %s)" % [p, imp.id, ", ".join(paint.keys())])
+	if imp.type == "kart":
+		out("Kart driver: exported with its own default clips - drive (seated) and hit.")
 	if Engine.is_editor_hint():
 		EditorInterface.get_resource_filesystem().scan()

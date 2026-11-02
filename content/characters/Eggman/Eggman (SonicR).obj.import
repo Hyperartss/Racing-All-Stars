@@ -1,0 +1,25 @@
+[remap]
+
+importer="wavefront_obj"
+importer_version=1
+type="Mesh"
+uid="uid://bnw8t8x3kprah"
+path="res://.godot/imported/Eggman (SonicR).obj-8bb11263a5f7be5497e2dc456c567d0e.mesh"
+
+[deps]
+
+files=["res://.godot/imported/Eggman (SonicR).obj-8bb11263a5f7be5497e2dc456c567d0e.mesh"]
+
+source_file="res://content/characters/Eggman/Eggman (SonicR).obj"
+dest_files=["res://.godot/imported/Eggman (SonicR).obj-8bb11263a5f7be5497e2dc456c567d0e.mesh", "res://.godot/imported/Eggman (SonicR).obj-8bb11263a5f7be5497e2dc456c567d0e.mesh"]
+
+[params]
+
+generate_tangents=true
+generate_lods=true
+generate_shadow_mesh=true
+generate_lightmap_uv2=false
+generate_lightmap_uv2_texel_size=0.2
+scale_mesh=Vector3(1, 1, 1)
+offset_mesh=Vector3(0, 0, 0)
+force_disable_mesh_compression=false

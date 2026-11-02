@@ -3,6 +3,9 @@ extends SceneTree
 ##   godot --headless -s tools/test_importers.gd
 ## 1. Kart Importer on the shipped kart OBJ: four wheels, each with its own radius,
 ##    a rig the game's VertexRig loads and a kart definition that names its textures.
+## 1b. Character Importer auto split on a synthetic biped: the legs stay apart, each
+##    foot is its own part, a kart driver exports with its own default clips (seated
+##    drive + hit), and feet that touch are tilted apart when the rig loads.
 ## 2. Map Importer on a generated oval course: road/wall classes, a centreline that
 ##    closes, checkpoints, the starting grid, and the result loaded by the game's
 ##    Track (road + wall collision).
@@ -24,6 +27,7 @@ func _init() -> void:
 
 func _start() -> void:
 	_test_kart()
+	_test_character()
 	_test_map()
 	_test_canvas()
 	_test_icons()
@@ -88,6 +92,258 @@ func _test_kart() -> void:
 		for f in tex.get_files():
 			if String(f).begins_with("kart__kart_test"):
 				DirAccess.remove_absolute(ProjectSettings.globalize_path("res://assets/rigs/tex/" + String(f)))
+
+
+# ---------------------------------------------------------------- character
+
+## Auto split of a biped built from boxes: every vertex below the crotch belongs to
+## the leg on its own side. The old split left half of them on the hips (the torso
+## capsule reached past the crotch), which moved both legs as one piece.
+func _test_character() -> void:
+	print("Character Importer (auto split)")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP))
+	var mesh_path := TMP + "biped.res"
+	var pos := PackedVector3Array()
+	var idx := PackedInt32Array()
+	# Big head, long legs close to the centre line: the proportions that made the old
+	# split glue the legs to the hips (the torso capsule reached well below the crotch).
+	_box(pos, idx, Vector3(-0.16, 0.30, -0.10), Vector3(0.16, 0.62, 0.10))     # torso
+	_box(pos, idx, Vector3(-0.15, 0.62, -0.12), Vector3(0.15, 1.00, 0.12))     # head
+	_box(pos, idx, Vector3(-0.50, 0.54, -0.05), Vector3(-0.16, 0.60, 0.05))    # arm, T-pose
+	_box(pos, idx, Vector3(0.16, 0.54, -0.05), Vector3(0.50, 0.60, 0.05))
+	_box(pos, idx, Vector3(-0.12, 0.00, -0.07), Vector3(-0.03, 0.30, 0.07), 3)  # left leg
+	_box(pos, idx, Vector3(0.03, 0.00, -0.07), Vector3(0.12, 0.30, 0.07), 3)    # right leg
+	# A sole welded across the feet (as in the Sonic R models): a face with corners on
+	# both legs is what stretched into a web between the two shoes.
+	var sole := pos.size()
+	pos.append_array(PackedVector3Array([Vector3(-0.06, 0.02, -0.03), Vector3(0.06, 0.02, -0.03),
+		Vector3(0.06, 0.06, 0.03), Vector3(-0.06, 0.06, 0.03)]))
+	idx.append_array(PackedInt32Array([sole, sole + 1, sole + 2, sole, sole + 2, sole + 3]))
+	var mesh := ArrayMesh.new()
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = pos
+	arr[Mesh.ARRAY_INDEX] = idx
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	check(ResourceSaver.save(mesh, mesh_path) == OK, "built the test biped")
+	var ci := CharacterImporter.new()
+	ci.id = "_biped_test"
+	ci.display_name = "Biped Test"
+	ci.height = 1.0
+	ci.split = "auto"
+	var err := ci.load_source(mesh_path)
+	check(err == "", "loads the test biped: %s" % err)
+	if err != "":
+		return
+	ci.analyse()
+	var crotch: float = float(ci.measure.get("crotch", 0.0)) * ci.height
+	check(absf(crotch - 0.30) < 0.04, "crotch measured at %.2f m" % crotch)
+	var rig := ci.build_rig()
+	var names: Array = rig.parts.map(func(p): return p.name)
+	check(names.has("leg_upper_l") and names.has("leg_upper_r"), "rig parts: " + str(names))
+	# Each foot is its own part, pivoted at the ankle, so it can be turned or nudged on
+	# its own instead of dragging the shin with it.
+	check(names.has("foot_l") and names.has("foot_r"), "a foot per side")
+	var ankle := 0.0
+	for p in rig.parts:
+		if String(p.name) == "foot_l":
+			ankle = float(p.pivot[1])
+	check(ankle > 0.0 and ankle < crotch * 0.6, "left ankle pivot at %.3f m (knee %.3f)" % [ankle, crotch * 0.6])
+	# A vertex position shared by two parts is a cut corner (see the check below), not
+	# a mis-split: the mesh is cut where the two legs are welded together.
+	var shared := {}
+	for s in rig.surfaces:
+		for k in s.pa.size():
+			var key := _vkey(s.pos, k)
+			if not shared.has(key):
+				shared[key] = {}
+			shared[key][s.pa[k]] = true
+	var below := 0
+	var wrong := 0
+	for s in rig.surfaces:
+		for k in s.pa.size():
+			if float(s.pos[k * 3 + 1]) > crotch - 0.01:
+				continue
+			below += 1
+			var part: String = names[s.pa[k]]
+			var on_left: bool = float(s.pos[k * 3]) < 0.0
+			if (part.ends_with("_l") and on_left) or (part.ends_with("_r") and not on_left):
+				continue
+			if shared[_vkey(s.pos, k)].size() < 2:
+				wrong += 1
+	check(below > 30, "%d vertices below the crotch" % below)
+	check(wrong == 0, "each of them is in the leg on its own side (%d wrong)" % wrong)
+	# Everything under the ankle is a foot, not the shin.
+	var under := 0
+	var misplaced := 0
+	for s in rig.surfaces:
+		for k in s.pa.size():
+			if float(s.pos[k * 3 + 1]) >= ankle:
+				continue
+			under += 1
+			if not String(names[s.pa[k]]).begins_with("foot"):
+				misplaced += 1
+	check(under > 0, "%d vertices below the ankle" % under)
+	check(misplaced == 0, "each of them is in a foot (%d in a leg)" % misplaced)
+	# The welded sole must be cut by the builder itself, so the rig file is right as it
+	# is exported - not repaired when something loads it. A face with corners in both
+	# legs stretches between them, and a foot holding the other shoe's geometry is what
+	# shears the two shoes through each other as soon as a leg moves.
+	var spanning := 0
+	var sideways := 0
+	var in_l := {}
+	var in_r := {}
+	var built_verts := 0
+	for si in rig.surfaces.size():
+		var s: Dictionary = rig.surfaces[si]
+		built_verts += s.pa.size()
+		for t in range(0, s.idx.size() - 2, 3):
+			var l := false
+			var r := false
+			for k in 3:
+				var nm: String = names[s.pa[s.idx[t + k]]]
+				l = l or nm.ends_with("_l")
+				r = r or nm.ends_with("_r")
+			if l and r:
+				spanning += 1
+		for k in s.pa.size():
+			var nm2: String = names[s.pa[k]]
+			var x: float = float(s.pos[k * 3])
+			# its own side is -x on the left, +x on the right: anything well past
+			# the centre line is the other foot's shoe.
+			var own := -1.0 if nm2.ends_with("_l") else 1.0
+			if nm2.begins_with("foot") and x * own < -0.01:
+				sideways += 1
+		for vi in s.idx:
+			var key := Vector2i(si, vi)
+			var nm3: String = names[s.pa[vi]]
+			if nm3.ends_with("_l"):
+				in_l[key] = true
+			elif nm3.ends_with("_r"):
+				in_r[key] = true
+	check(spanning == 0, "the built rig has no face joining the two legs (%d do)" % spanning)
+	check(sideways == 0, "each foot holds only its own shoe (%d vertices on the wrong side)" % sideways)
+	var both := 0
+	for key in in_l:
+		if in_r.has(key):
+			both += 1
+	check(both == 0, "no vertex is used by both sides (%d are)" % both)
+	# Loading that file must change nothing: it is already cut.
+	var rig_path := TMP + "rigs/_biped_test.json"
+	ci.export({}, TMP + "rigs/", TMP + "chars/")
+	var vr_test := VertexRig.new()
+	vr_test.load_rig(rig_path)
+	check(vr_test.part_names.size() > 0, "the exported rig loads through VertexRig")
+	var loaded_verts := 0
+	for s in vr_test._surf:
+		loaded_verts += s.pa.size()
+	check(loaded_verts == built_verts,
+		"loading the exported rig cuts nothing more (%d vs %d vertices)" % [loaded_verts, built_verts])
+	vr_test.free()
+	# A kart driver sits: exporting one writes its own default clips.
+	var ki := CharacterImporter.new()
+	ki.id = "_biped_kart"
+	ki.display_name = "Biped Kart"
+	ki.height = 1.0
+	ki.split = "auto"
+	ki.type = "kart"
+	check(ki.load_source(mesh_path) == "", "loads the test biped as a kart driver")
+	ki.analyse()
+	var def_path := ki.export({}, TMP + "rigs/", TMP + "chars/")
+	var def: Variant = JSON.parse_string(FileAccess.get_file_as_string(def_path))
+	check(def is Dictionary, "kart definition parses")
+	if def is Dictionary:
+		var anims: Dictionary = def.get("animations", {})
+		check(anims.has("drive") and anims.has("hit"), "kart clips: " + str(anims.keys()))
+		var keys: Array = anims.get("drive", {}).get("keys", [])
+		var pose: Dictionary = keys[0].get("pose", {}) if keys.size() > 0 else {}
+		var thigh: Array = pose.get("leg_upper_l", {}).get("rot", [0.0, 0.0, 0.0])
+		var seated := absf(float(thigh[0])) > 1.0
+		check(seated, "the drive clip holds the seated pose (thigh %.2f rad)" % float(thigh[0]))
+		check(anims.get("hit", {}).get("keys", []).size() > 4, "the hit clip has keys")
+		check(def.has("seat"), "the kart driver has a seat")
+	# Feet that touch in the model are tilted apart when the rig loads: two shoes
+	# modelled as one block across the centre line otherwise read as a single foot.
+	var rig_file: String = TMP + "rigs/_biped_kart.json"
+	if FileAccess.file_exists(rig_file):
+		var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(rig_file))
+		check(data is Dictionary, "the kart rig parses")
+		if data is Dictionary:
+			var pnames: Array = data.parts.map(func(p): return String(p.name))
+			var fl: int = pnames.find("foot_l")
+			var fr: int = pnames.find("foot_r")
+			check(fl >= 0 and fr >= 0, "the exported rig has both feet")
+			# Slide each foot to the centre line: the shoes now touch.
+			for s in data.surfaces:
+				for k in s.pa.size():
+					if s.pa[k] == fl:
+						s.pos[k * 3] = float(s.pos[k * 3]) + 0.03
+					elif s.pa[k] == fr:
+						s.pos[k * 3] = float(s.pos[k * 3]) - 0.03
+			var touch := TMP + "rigs/_feet_touch.json"
+			var f := FileAccess.open(touch, FileAccess.WRITE)
+			f.store_string(JSON.stringify(data))
+			f.close()
+			var vr := VertexRig.new()
+			vr.load_rig(touch)
+			check(vr.leg_splay > 0.01, "touching feet are tilted apart (%.1f deg)" % rad_to_deg(vr.leg_splay))
+			var pl: Vector3 = vr.pivot_of(&"foot_l")
+			var pr: Vector3 = vr.pivot_of(&"foot_r")
+			var ml: Vector3 = vr.point_on(&"foot_l", pl)
+			var mr: Vector3 = vr.point_on(&"foot_r", pr)
+			check(ml.x < pl.x - 0.005 and mr.x > pr.x + 0.005,
+				"each foot moves outward (left %.3f -> %.3f, right %.3f -> %.3f)" % [pl.x, ml.x, pr.x, mr.x])
+			vr.free()
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(touch))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(mesh_path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(def_path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(rig_path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(TMP + "chars/_biped_test.png"))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(TMP + "chars/_biped_test.json"))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(TMP + "chars/_biped_kart.png"))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(TMP + "rigs/_biped_kart.json"))
+	var tex := DirAccess.open(TMP + "rigs/tex/")
+	if tex:
+		for f in tex.get_files():
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(TMP + "rigs/tex/" + String(f)))
+	for d in [TMP + "rigs/tex/", TMP + "rigs/", TMP + "chars/"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(d))
+
+
+## Rounded position of vertex `k` of a rig surface, for spotting shared corners.
+func _vkey(pos: Array, k: int) -> Vector3i:
+	return Vector3i(roundi(float(pos[k * 3]) * 200.0), roundi(float(pos[k * 3 + 1]) * 200.0),
+		roundi(float(pos[k * 3 + 2]) * 200.0))
+
+
+## Appends an axis-aligned box to a mesh being built (12 triangles per slab).
+## `rings` splits it into that many stacked boxes, so the shape has vertices between
+## its ends (a leg has to be checked above the ankles, not only at the corners).
+func _box(pos: PackedVector3Array, idx: PackedInt32Array, lo: Vector3, hi: Vector3,
+		rings: int = 1) -> void:
+	for s in maxi(rings, 1):
+		var a := lo.y + (hi.y - lo.y) * float(s) / float(maxi(rings, 1))
+		var b := lo.y + (hi.y - lo.y) * float(s + 1) / float(maxi(rings, 1))
+		_slab(pos, idx, Vector3(lo.x, a, lo.z), Vector3(hi.x, b, hi.z))
+
+
+func _slab(pos: PackedVector3Array, idx: PackedInt32Array, lo: Vector3, hi: Vector3) -> void:
+	var base := pos.size()
+	for x in [lo.x, hi.x]:
+		for y in [lo.y, hi.y]:
+			for z in [lo.z, hi.z]:
+				pos.append(Vector3(x, y, z))
+	# Corner index for (x, y, z) in 0/1: the loops above append x-major, then y, then z.
+	var at := func(x: int, y: int, z: int) -> int: return base + x * 4 + y * 2 + z
+	for f in [[0, 0, 0, 0, 0, 1, 0, 1, 1], [0, 0, 0, 0, 1, 1, 0, 1, 0],
+			[1, 0, 0, 1, 1, 0, 1, 1, 1], [1, 0, 0, 1, 1, 1, 1, 0, 1],
+			[0, 0, 0, 1, 0, 0, 1, 0, 1], [0, 0, 0, 1, 0, 1, 0, 0, 1],
+			[0, 1, 0, 0, 1, 1, 1, 1, 1], [0, 1, 0, 1, 1, 1, 1, 1, 0],
+			[0, 0, 0, 0, 1, 0, 1, 1, 0], [0, 0, 0, 1, 1, 0, 1, 0, 0],
+			[0, 0, 1, 1, 0, 1, 1, 1, 1], [0, 0, 1, 1, 1, 1, 0, 1, 1]]:
+		idx.append(int(at.call(f[0], f[1], f[2])))
+		idx.append(int(at.call(f[3], f[4], f[5])))
+		idx.append(int(at.call(f[6], f[7], f[8])))
 
 
 # ---------------------------------------------------------------- map
