@@ -1,0 +1,45 @@
+{
+	"colour": "#f48700",
+	"icon": "res://content/characters/tails.png",
+	"id": "tails",
+	"name": "Miles \"Tails\" Prower",
+	"paint": {
+		"orange": {
+			"default": "#f48700",
+			"label": "Orange",
+			"presets": [
+				"#f48700",
+				"#e02020",
+				"#2050ff",
+				"#20b040",
+				"#c040ff",
+				"#f0f0f0"
+			],
+			"src": "#f48700",
+			"surface": "",
+			"tol": 0.06
+		},
+		"red": {
+			"default": "#f2300f",
+			"label": "Red",
+			"presets": [
+				"#f2300f",
+				"#2050ff",
+				"#20b040",
+				"#f0d020",
+				"#c040ff",
+				"#f0f0f0"
+			],
+			"src": "#f2300f",
+			"surface": "",
+			"tol": 0.06
+		}
+	},
+	"rig": "res://assets/rigs/tails.json",
+	"stats": {
+		"accel": 4.0,
+		"handling": 4.0,
+		"speed": 4.0
+	},
+	"type": "runner"
+}

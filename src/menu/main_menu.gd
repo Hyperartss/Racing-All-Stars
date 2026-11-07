@@ -73,8 +73,8 @@ func _build_stage() -> void:
 	var cam := Camera3D.new()
 	cam.fov = 42.0
 	cam.position = Vector3(-1.25, 1.05, 3.3)
-	cam.look_at(Vector3(-1.25, 0.55, 0))
 	add_child(cam)
+	cam.look_at(Vector3(-1.25, 0.55, 0))
 	cam.current = true
 
 

@@ -185,50 +185,13 @@ func _test_character() -> void:
 				misplaced += 1
 	check(under > 0, "%d vertices below the ankle" % under)
 	check(misplaced == 0, "each of them is in a foot (%d in a leg)" % misplaced)
-	# The welded sole must be cut by the builder itself, so the rig file is right as it
-	# is exported - not repaired when something loads it. A face with corners in both
-	# legs stretches between them, and a foot holding the other shoe's geometry is what
-	# shears the two shoes through each other as soon as a leg moves.
-	var spanning := 0
-	var sideways := 0
-	var in_l := {}
-	var in_r := {}
+	# The rig keeps the model exactly as it was authored: the builder writes the model's
+	# own faces and parts and invents nothing, so a shoe welded to its neighbour stays
+	# welded instead of being cut into halves that open up when a leg moves.
 	var built_verts := 0
-	for si in rig.surfaces.size():
-		var s: Dictionary = rig.surfaces[si]
+	for s in rig.surfaces:
 		built_verts += s.pa.size()
-		for t in range(0, s.idx.size() - 2, 3):
-			var l := false
-			var r := false
-			for k in 3:
-				var nm: String = names[s.pa[s.idx[t + k]]]
-				l = l or nm.ends_with("_l")
-				r = r or nm.ends_with("_r")
-			if l and r:
-				spanning += 1
-		for k in s.pa.size():
-			var nm2: String = names[s.pa[k]]
-			var x: float = float(s.pos[k * 3])
-			# its own side is -x on the left, +x on the right: anything well past
-			# the centre line is the other foot's shoe.
-			var own := -1.0 if nm2.ends_with("_l") else 1.0
-			if nm2.begins_with("foot") and x * own < -0.01:
-				sideways += 1
-		for vi in s.idx:
-			var key := Vector2i(si, vi)
-			var nm3: String = names[s.pa[vi]]
-			if nm3.ends_with("_l"):
-				in_l[key] = true
-			elif nm3.ends_with("_r"):
-				in_r[key] = true
-	check(spanning == 0, "the built rig has no face joining the two legs (%d do)" % spanning)
-	check(sideways == 0, "each foot holds only its own shoe (%d vertices on the wrong side)" % sideways)
-	var both := 0
-	for key in in_l:
-		if in_r.has(key):
-			both += 1
-	check(both == 0, "no vertex is used by both sides (%d are)" % both)
-	# Loading that file must change nothing: it is already cut.
+	# Loading that file must change nothing: nothing is cut on load.
 	var rig_path := TMP + "rigs/_biped_test.json"
 	ci.export({}, TMP + "rigs/", TMP + "chars/")
 	var vr_test := VertexRig.new()

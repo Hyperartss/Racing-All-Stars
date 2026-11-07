@@ -642,45 +642,12 @@ func build_rig(tex_map: Dictionary = {}) -> Dictionary:
 		surfaces.append({"texture": tex_map.get(key, key), "alpha": "scissor", "cull": false,
 			"pos": Array(pos), "nrm": Array(nrm), "uv": Array(uv), "idx": Array(idx),
 			"pa": Array(pa), "pb": Array(pa), "w": []})
-	_cut_centre(surfaces, roles)
 	_seams(surfaces, roles)
 	return {"name": id, "parts": parts, "surfaces": surfaces, "meta": {
 		"source": source_path, "imported_with": "Character Importer", "scale": scale,
 		"rest_pose": rest_pose_name(), "split": split,
 		"aabb_min": [snappedf(lo.x, 0.0001), snappedf(lo.y, 0.0001), snappedf(lo.z, 0.0001)],
 		"aabb_max": [snappedf(hi.x, 0.0001), snappedf(hi.y, 0.0001), snappedf(hi.z, 0.0001)]}}
-
-
-## Cuts a model whose two shoes are welded across the centre line into two feet, in
-## the exported rig itself, so the file works as it is - the game, the Animation Editor
-## and any other tool - instead of being patched when it loads. The cut only splits
-## faces that straddle the centre plane; no geometry is thrown away. See
-## VertexRig.cut_welds, which older rigs get on load.
-func _cut_centre(surfaces: Array, roles: PackedStringArray) -> void:
-	var views: Array = []
-	for s in surfaces:
-		var n: int = s.pa.size()
-		var pos := PackedVector3Array(); pos.resize(n)
-		var nrm := PackedVector3Array(); nrm.resize(n)
-		var uv := PackedVector2Array(); uv.resize(n)
-		for i in n:
-			pos[i] = Vector3(s.pos[i * 3], s.pos[i * 3 + 1], s.pos[i * 3 + 2])
-			nrm[i] = Vector3(s.nrm[i * 3], s.nrm[i * 3 + 1], s.nrm[i * 3 + 2])
-			uv[i] = Vector2(s.uv[i * 2], s.uv[i * 2 + 1])
-		views.append({"pos": pos, "nrm": nrm, "uv": uv, "idx": PackedInt32Array(s.idx),
-			"pa": PackedInt32Array(s.pa), "pb": PackedInt32Array(s.pb),
-			"w": PackedFloat32Array(s.w)})
-	VertexRig.cut_welds(views, roles, height)
-	for i in surfaces.size():
-		var s: Dictionary = surfaces[i]
-		var v: Dictionary = views[i]
-		s.pos = _flat3(v.pos)
-		s.nrm = _flat3(v.nrm)
-		s.uv = _flat2(v.uv)
-		s.pa = Array(v.pa)
-		s.pb = Array(v.pb)
-		s.w = Array(v.w)
-		s.idx = Array(v.idx)
 
 
 ## A packed vector array back to the flat float list the rig file stores.
@@ -785,10 +752,22 @@ static func key_image(key: String) -> Image:
 		if a:
 			a.convert(Image.FORMAT_RGBA8)
 			a.resize(img.get_width(), img.get_height(), Image.INTERPOLATE_NEAREST)
+			# Some exporters (the Sonic R Eggman mustache) put the cut-out in the mask's
+			# alpha channel and leave the RGB white. Its luminance would erase the
+			# cut-out, so use alpha when the map actually has transparency.
+			var use_alpha := false
+			for y in a.get_height():
+				for x in a.get_width():
+					if a.get_pixel(x, y).a < 0.999:
+						use_alpha = true
+						break
+				if use_alpha:
+					break
 			for y in img.get_height():
 				for x in img.get_width():
 					var c := img.get_pixel(x, y)
-					c.a = a.get_pixel(x, y).get_luminance()
+					var m := a.get_pixel(x, y)
+					c.a = m.a if use_alpha else m.get_luminance()
 					img.set_pixel(x, y, c)
 	return img
 

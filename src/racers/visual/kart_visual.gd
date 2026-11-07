@@ -15,7 +15,7 @@ extends RacerVisual
 @export var driver_rig_path := "res://assets/rigs/mario.json"
 ## Where the driver's hips sit, in kart space (rest pose).
 @export var seat := Vector3(0.0, 0.05, 0.16)
-@export var driver_scale := 0.0  ## 0 = automatic (0.85 m tall)
+@export var driver_scale := 0.0  ## 0 = automatic (1.1 m tall, like a runner)
 
 var kart: VertexRig
 var driver: VertexRig
@@ -44,13 +44,14 @@ func _ready() -> void:
 	driver.load_rig(driver_rig_path)
 	# Arms modelled hanging down: lift them to the T-pose the seated pose starts from.
 	_arm_rest = -PI * 0.5 if driver.rest_pose() == "arms_down" else 0.0
-	# Any driver is scaled to sit like a 0.85 m tall racer.
+	# Any driver is scaled to the same standing height as a runner, so a kart driver
+	# no longer looks small beside one on the track.
 	var h := (
 		float(driver.meta.get("aabb_max", [0, 0.85, 0])[1])
 		- float(driver.meta.get("aabb_min", [0, 0, 0])[1])
 	)
 	if driver_scale <= 0.0:
-		driver_scale = 0.85 / maxf(h, 0.05)
+		driver_scale = 1.1 / maxf(h, 0.05)
 	init_anim()
 
 

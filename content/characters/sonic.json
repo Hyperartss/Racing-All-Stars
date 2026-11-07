@@ -2,7 +2,7 @@
 	"colour": "#3a00ff",
 	"icon": "res://content/characters/sonic.png",
 	"id": "sonic",
-	"name": "sonc",
+	"name": "Sonic the Hedgehog",
 	"paint": {
 		"purple": {
 			"default": "#3a00ff",
