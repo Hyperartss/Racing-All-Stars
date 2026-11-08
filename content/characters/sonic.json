@@ -1,36 +1,51 @@
 {
-	"colour": "#3a00ff",
+	"colour": "#3f27b5",
 	"icon": "res://content/characters/sonic.png",
 	"id": "sonic",
 	"name": "Sonic the Hedgehog",
 	"paint": {
+		"orange": {
+			"default": "#e6b377",
+			"label": "Orange",
+			"presets": [
+				"#e6b377",
+				"#e02020",
+				"#2050ff",
+				"#20b040",
+				"#c040ff",
+				"#f0f0f0"
+			],
+			"src": "#e6b377",
+			"surface": "",
+			"tol": 0.06
+		},
 		"purple": {
-			"default": "#3a00ff",
+			"default": "#3f27b5",
 			"label": "Purple",
 			"presets": [
-				"#3a00ff",
+				"#3f27b5",
 				"#e02020",
 				"#2050ff",
 				"#20b040",
 				"#f0d020",
 				"#f08020"
 			],
-			"src": "#3a00ff",
+			"src": "#3f27b5",
 			"surface": "",
 			"tol": 0.06
 		},
 		"red": {
-			"default": "#dc0000",
+			"default": "#d30407",
 			"label": "Red",
 			"presets": [
-				"#dc0000",
+				"#d30407",
+				"#e02020",
 				"#2050ff",
 				"#20b040",
 				"#f0d020",
-				"#f08020",
-				"#c040ff"
+				"#f08020"
 			],
-			"src": "#dc0000",
+			"src": "#d30407",
 			"surface": "",
 			"tol": 0.06
 		}

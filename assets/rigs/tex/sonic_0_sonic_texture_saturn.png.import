@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://l3s3ou4dq2xg"
-path="res://.godot/imported/egmman.png-3511fcae2066854681ee6a735f0015b1.ctex"
+uid="uid://doxkyimu3q55m"
+path="res://.godot/imported/sonic_0_sonic_texture_saturn.png-a5a1c93e559b39b45c33699d755c2c53.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://content/characters/egmman.png"
-dest_files=["res://.godot/imported/egmman.png-3511fcae2066854681ee6a735f0015b1.ctex"]
+source_file="res://assets/rigs/tex/sonic_0_sonic_texture_saturn.png"
+dest_files=["res://.godot/imported/sonic_0_sonic_texture_saturn.png-a5a1c93e559b39b45c33699d755c2c53.ctex"]
 
 [params]
 

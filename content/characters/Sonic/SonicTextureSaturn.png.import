@@ -2,8 +2,8 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://ce71c1qy6kill"
-path.s3tc="res://.godot/imported/Pallete.png-27e96313712518e6a47ee00d5011c263.s3tc.ctex"
+uid="uid://bk475t3jn7eyw"
+path.s3tc="res://.godot/imported/SonicTextureSaturn.png-2ecf1d0582ba268dba1e4a52e2170a8c.s3tc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc"],
 "vram_texture": true
@@ -11,8 +11,8 @@ metadata={
 
 [deps]
 
-source_file="res://content/characters/Sonic/Pallete.png"
-dest_files=["res://.godot/imported/Pallete.png-27e96313712518e6a47ee00d5011c263.s3tc.ctex"]
+source_file="res://content/characters/Sonic/SonicTextureSaturn.png"
+dest_files=["res://.godot/imported/SonicTextureSaturn.png-2ecf1d0582ba268dba1e4a52e2170a8c.s3tc.ctex"]
 
 [params]
 
