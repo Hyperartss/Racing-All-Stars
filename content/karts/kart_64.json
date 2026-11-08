@@ -1,0 +1,28 @@
+{
+	"id": "kart_64",
+	"name": "Kart 64",
+	"paint": {
+		"body": {
+			"default": "#ff0000",
+			"label": "Body",
+			"mode": "swap",
+			"presets": [
+				"#ff0000",
+				"#2050e0",
+				"#20b040",
+				"#e0c020",
+				"#e060c0",
+				"#30d0d0"
+			],
+			"src": "#ff0000",
+			"surface": "kart_64_0_kart_mario",
+			"tol": 0.06
+		}
+	},
+	"rig": "res://assets/rigs/kart_64.json",
+	"seat": [
+		0.0,
+		0.057,
+		0.168
+	]
+}

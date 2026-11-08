@@ -1,0 +1,29 @@
+{
+	"id": "bulletblaster",
+	"name": "Bullet Blaster",
+	"paint": {
+		"body": {
+			"default": "#8e191d",
+			"label": "Body",
+			"mode": "swap",
+			"presets": [
+				"#8e191d",
+				"#c00000",
+				"#2050e0",
+				"#20b040",
+				"#e0c020",
+				"#f0f0f0",
+				"#202020"
+			],
+			"src": "#8e191d",
+			"surface": "kart_bulletblaster_1_bullet_wheel",
+			"tol": 0.06
+		}
+	},
+	"rig": "res://assets/rigs/kart_bulletblaster.json",
+	"seat": [
+		0.0,
+		0.092,
+		0.168
+	]
+}
