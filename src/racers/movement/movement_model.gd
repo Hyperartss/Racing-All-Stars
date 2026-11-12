@@ -16,6 +16,14 @@ var max_speed := 20.0
 ## Multiplier on top speed from the surface under us (road 1.0).
 var surface_factor := 1.0
 var hit_timer := 0.0
+## Top-speed multiplier from outside the model (rings held, shrunk by lightning ...).
+## RacerItems sets it every frame.
+var bonus_mult := 1.0
+## Item / pad boost: extra top speed for a while (mushrooms, dash panels, stars,
+## tricks, rocket starts). While it runs, off-road does not slow you down.
+var ext_boost_timer := 0.0
+var ext_boost_speed := 0.0
+var _launch := 0.0
 
 
 func setup(r: CharacterBody3D) -> void:
@@ -54,6 +62,39 @@ func reset_motion(new_heading: float) -> void:
 	racer.velocity = Vector3.ZERO
 
 
+## Boost from an item, pad, trick or rocket start (stacks by taking the longer/stronger).
+func item_boost(seconds: float, extra_speed: float) -> void:
+	ext_boost_speed = maxf(ext_boost_speed if ext_boost_timer > 0.0 else 0.0, extra_speed)
+	ext_boost_timer = maxf(ext_boost_timer, seconds)
+	speed = maxf(speed, max_speed * 0.6)
+
+
+func boost_left() -> float:
+	return ext_boost_timer
+
+
+## Extra top speed right now (call once per physics step: it also counts down).
+func ext_boost(delta: float) -> float:
+	if ext_boost_timer <= 0.0:
+		ext_boost_speed = 0.0
+		return 0.0
+	ext_boost_timer = maxf(0.0, ext_boost_timer - delta)
+	return ext_boost_speed
+
+
+## Springs: leave the ground with this upward speed on the next step.
+func launch(up_speed: float) -> void:
+	_launch = up_speed
+	if "vy" in self:
+		set("vy", up_speed)
+	if "jumping" in self:
+		set("jumping", true)
+
+
+func launching() -> bool:
+	return _launch > 0.0
+
+
 ## Knocked by something (wall at speed, other racer, item).
 func take_hit(seconds: float) -> void:
 	hit_timer = maxf(hit_timer, seconds)
@@ -69,7 +110,12 @@ func forward() -> Vector3:
 func move_body(planar_velocity: Vector3, vertical: float, delta: float) -> float:
 	var body := racer
 	var v := planar_velocity
-	if body.is_on_floor():
+	var snap := body.floor_snap_length
+	if _launch > 0.0:
+		v.y = maxf(vertical, _launch)
+		body.floor_snap_length = 0.0
+		body.position += Vector3.UP * 0.08
+	elif body.is_on_floor():
 		var n := body.get_floor_normal()
 		# Follow slopes: keep speed, tilt the motion into the floor plane.
 		v = (v - n * v.dot(n))
@@ -81,6 +127,9 @@ func move_body(planar_velocity: Vector3, vertical: float, delta: float) -> float
 	body.velocity = v
 	var before := body.velocity
 	body.move_and_slide()
+	if _launch > 0.0:
+		_launch = 0.0
+		body.floor_snap_length = snap
 	var impact := 0.0
 	for i in body.get_slide_collision_count():
 		var c := body.get_slide_collision(i)

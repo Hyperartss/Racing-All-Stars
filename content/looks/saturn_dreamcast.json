@@ -1,0 +1,11 @@
+{
+	"id": "saturn_dreamcast",
+	"name": "Saturn x Dreamcast",
+	"resolution": [640, 360],
+	"filter": "nearest",
+	"bits": [5, 6, 5],
+	"dither": 0.6,
+	"scanlines": 0.0,
+	"fog_scale": 1.0,
+	"saturation": 1.1
+}

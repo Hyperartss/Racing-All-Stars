@@ -1,0 +1,28 @@
+{
+	"id": "spiny_shell",
+	"name": "Spiny Shell",
+	"behaviour": "shell",
+	"shape": "spiny",
+	"colour": "#2060e0",
+	"params": {
+		"mode": "leader",
+		"speed": 55.0,
+		"explode_radius": 5.5
+	},
+	"odds": [
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		5,
+		5,
+		5,
+		5,
+		5,
+		5
+	],
+	"count": 1,
+	"enabled": true
+}

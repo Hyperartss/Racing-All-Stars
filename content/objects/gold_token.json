@@ -1,0 +1,15 @@
+{
+	"id": "gold_token",
+	"name": "Gold token",
+	"behaviour": "collectable",
+	"category": "Collectables",
+	"shape": "token",
+	"colour": "#ffc61a",
+	"size": [
+		0.6,
+		1.5
+	],
+	"params": {
+		"kind": "token"
+	}
+}

@@ -1,0 +1,28 @@
+{
+	"id": "triple_red_shell",
+	"name": "Triple Red Shell",
+	"behaviour": "shell",
+	"count": 3,
+	"shape": "shell",
+	"colour": "#e02020",
+	"params": {
+		"mode": "homing",
+		"speed": 42.0,
+		"life": 10.0
+	},
+	"odds": [
+		0,
+		0,
+		5,
+		10,
+		15,
+		15,
+		15,
+		10,
+		5,
+		5,
+		0,
+		0
+	],
+	"enabled": true
+}

@@ -1,0 +1,16 @@
+{
+	"id": "spring",
+	"name": "Spring",
+	"behaviour": "launcher",
+	"category": "Gameplay",
+	"shape": "spring",
+	"colour": "#e02020",
+	"size": [
+		0.8,
+		0.7
+	],
+	"params": {
+		"launch": 16.0,
+		"forward": 4.0
+	}
+}

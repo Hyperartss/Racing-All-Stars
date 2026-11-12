@@ -155,7 +155,9 @@ func _build_geometry() -> void:
 	props_root.name = "Props"
 	add_child(props_root)
 	var props: Array = decor.get("props", [])
-	TrackProps.spawn(props_root, props)
+	# Gameplay objects (rings, item boxes, doors ...) are props too; in the Map Editor
+	# (keep_geometry) they are built as inert previews.
+	TrackProps.spawn(props_root, props, keep_geometry or Engine.is_editor_hint())
 
 
 static func _vec3_of(v: Variant) -> Vector3:
@@ -321,7 +323,7 @@ func _material(s: Dictionary) -> Material:
 	var tp := TEX_DIR + String(s.texture).to_lower()
 	if ResourceLoader.exists(tp):
 		m.albedo_texture = load(tp)
-	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	m.texture_filter = RetroLook.base_filter()
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
 	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 	m.roughness = 1.0

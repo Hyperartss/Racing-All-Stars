@@ -39,6 +39,7 @@ extends HSplitContainer
 ## Undo: Ctrl+Z / Ctrl+Shift+Z. Save: Ctrl+S.
 
 const MAPS := "res://content/maps/"
+const SchemaForm := preload("res://addons/retro_tools/schema_form.gd")
 const DECOR := "decor.json"
 const UNDO_LIMIT := 60
 const CELL := 16.0                 ## pick grid cell size in metres
@@ -174,6 +175,9 @@ var sel_label: Label
 var surf_list: ItemList
 var surf_label: Label
 var status_label: Label
+var obj_box: VBoxContainer          ## settings of the selected gameplay object
+var face_road: CheckBox
+var auto_spacing: SpinBox
 var view_status: Label
 var preview_holder: SubViewportContainer
 var viewport: SubViewport
@@ -305,11 +309,10 @@ func _build_left() -> void:
 	palette_pick = OptionButton.new()
 	palette_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	palette_pick.tooltip_text = "What the Place tool stamps"
-	for t in TrackProps.TYPES:
-		palette_pick.add_item(String(TrackProps.LABEL.get(t, t)))
-		palette_pick.set_item_metadata(palette_pick.item_count - 1, t)
+	_fill_palette()
 	palette_pick.item_selected.connect(_on_palette_picked)
 	row.add_child(palette_pick)
+	_btn(row, "R", refresh_palette).tooltip_text = "Re-read content/objects (new object types made in the Game Editor)"
 	tint_pick = ColorPickerButton.new()
 	tint_pick.custom_minimum_size = Vector2(46, 0)
 	tint_pick.color = TrackProps.default_tint(palette)
@@ -334,6 +337,36 @@ func _build_left() -> void:
 	jitter_spin.value = 0.15
 	jitter_spin.tooltip_text = "Random scale variation when stamping"
 	row.add_child(jitter_spin)
+	face_road = CheckBox.new()
+	face_road.text = "Gameplay objects face the road"
+	face_road.button_pressed = true
+	face_road.tooltip_text = "Item box rows, doors, dash panels and ring lines are turned to the\n" + \
+		"racing direction at the spot you click (decoration keeps Random yaw)."
+	v.add_child(face_road)
+
+	# --- gameplay ------------------------------------------------------------------
+	_lbl(v, "Gameplay (rings, item boxes, doors ...)")
+	_muted(v, "Pick a Gameplay / Collectables entry in the palette above and click the course, or fill the whole lap at once:")
+	row = HBoxContainer.new()
+	v.add_child(row)
+	_label(row, "Every")
+	auto_spacing = SpinBox.new()
+	auto_spacing.min_value = 20.0
+	auto_spacing.max_value = 2000.0
+	auto_spacing.step = 5.0
+	auto_spacing.value = 150.0
+	auto_spacing.suffix = "m"
+	auto_spacing.tooltip_text = "Distance along the racing line between auto-placed objects"
+	row.add_child(auto_spacing)
+	row = HBoxContainer.new()
+	v.add_child(row)
+	_btn(row, "Auto item boxes", func() -> void: auto_place("item_box_row", 0.0)).tooltip_text = \
+		"A row of item boxes across the road every N metres of the lap"
+	_btn(row, "Auto rings", func() -> void: auto_place("ring_line", 0.45)).tooltip_text = \
+		"A ring line along the road every N metres (half-way between item box rows)"
+	row = HBoxContainer.new()
+	v.add_child(row)
+	_btn(row, "Remove gameplay", remove_gameplay).tooltip_text = "Delete every gameplay object (decoration stays)"
 
 	# --- selection ----------------------------------------------------------------
 	_lbl(v, "Selected prop")
@@ -375,6 +408,8 @@ func _build_left() -> void:
 	scale_spin.allow_greater = true
 	scale_spin.value_changed.connect(func(_x: float) -> void: _scale_changed())
 	g.add_child(scale_spin)
+	obj_box = VBoxContainer.new()
+	v.add_child(obj_box)
 
 	# --- surface cleanup -----------------------------------------------------------
 	_lbl(v, "Baked surfaces")
@@ -651,6 +686,8 @@ func load_map(id: String) -> void:
 			break
 	_syncing = false
 
+	ObjectTypes.reload()
+	_fill_palette()
 	decor = _read_json(data_path.get_base_dir() + "/" + DECOR)
 	if decor.is_empty():
 		decor = _empty_decor()
@@ -785,7 +822,7 @@ func _set_tool(t: String) -> void:
 		"select":
 			status("Select: click a prop, then drag the gizmo. Delete removes it.")
 		"place":
-			status("Place: click the course to stamp %s." % TrackProps.LABEL.get(palette, palette))
+			status("Place: click the course to stamp %s." % TrackProps.label(palette))
 		"erase":
 			status("Erase: drag the brush over geometry to hide triangles. Release to apply.")
 		"part":
@@ -818,15 +855,151 @@ func _stamp_entry(at: Vector3) -> Dictionary:
 	var yaw := randf_range(-180.0, 180.0) if random_yaw.button_pressed else 0.0
 	var jitter := jitter_spin.value
 	var scl := 1.0
-	if jitter > 0.001:
+	var obj := TrackProps.is_object(palette)
+	if jitter > 0.001 and not obj:
 		scl = 1.0 + randf_range(-jitter, jitter)
-	return {
+	if obj and (face_road == null or face_road.button_pressed):
+		yaw = _road_yaw(at)
+	elif obj:
+		yaw = 0.0
+	var e := {
 		"type": palette,
 		"pos": [_r(at.x), _r(at.y), _r(at.z)],
 		"yaw": _r(yaw, 0.1),
 		"scale": _r(maxf(scl, 0.1), 0.01),
 		"tint": tint_pick.color.to_html(false),
 	}
+	if obj:
+		e["params"] = ObjectTypes.initial_params(palette)
+	return e
+
+
+## Yaw (degrees) that faces along the racing line nearest to `at`.
+func _road_yaw(at: Vector3) -> float:
+	if track == null or track.path.size() == 0:
+		return 0.0
+	var i := track.path.nearest(at)
+	var t := track.path.tangent[i]
+	return rad_to_deg(atan2(-t.x, -t.z))
+
+
+func _fill_palette() -> void:
+	palette_pick.clear()
+	var sel_i := 0
+	var last_cat := ""
+	for t in TrackProps.all_types():
+		var cat := "Decoration" if not TrackProps.is_object(t) else ObjectTypes.category(t)
+		if cat != last_cat:
+			palette_pick.add_separator(cat)
+			last_cat = cat
+		palette_pick.add_item(TrackProps.label(t) if not TrackProps.is_object(t) else ObjectTypes.label(t))
+		palette_pick.set_item_metadata(palette_pick.item_count - 1, t)
+		if t == palette:
+			sel_i = palette_pick.item_count - 1
+	palette_pick.select(sel_i)
+
+
+func refresh_palette() -> void:
+	ObjectTypes.reload()
+	_fill_palette()
+	status("Palette: %d decoration types, %d gameplay object types." % [TrackProps.TYPES.size(), ObjectTypes.defs().size()])
+
+
+## Place `type` along the whole lap every N metres, starting `phase` of the way in.
+func auto_place(type: String, phase: float) -> void:
+	if track == null or not ObjectTypes.has(type):
+		status("Load a map first (and check content/objects/%s.json exists)." % type)
+		return
+	var path := track.path
+	var step := auto_spacing.value
+	var d := step * (0.5 + phase)
+	var n := 0
+	while d < path.length - step * 0.25:
+		var i := path.index_at_distance(d)
+		var at := path.pos[i]
+		var hit := _raycast(at + Vector3.UP * 4.0, Vector3.DOWN, 12.0)
+		if not hit.is_empty():
+			at = hit.pos
+		var t := path.tangent[i]
+		var e := {"type": type, "pos": [_r(at.x), _r(at.y), _r(at.z)],
+			"yaw": _r(rad_to_deg(atan2(-t.x, -t.z)), 0.1), "scale": 1.0,
+			"tint": TrackProps.default_tint(type).to_html(false), "params": ObjectTypes.initial_params(type)}
+		_props().append(e)
+		track.props_root.add_child(TrackProps.make(e))
+		n += 1
+		d += step
+	_commit("auto")
+	_update_prop_label()
+	status("Placed %d %s along the lap (every %d m). Undo removes them." % [n, ObjectTypes.label(type), int(step)])
+
+
+func remove_gameplay() -> void:
+	var props := _props()
+	var before := props.size()
+	for i in range(props.size() - 1, -1, -1):
+		if TrackProps.is_object(String(props[i].get("type", ""))):
+			props.remove_at(i)
+	if props.size() == before:
+		status("No gameplay objects on this map.")
+		return
+	sel = -1
+	_apply_decor()
+	_commit("remove_gameplay")
+	status("Removed %d gameplay objects." % (before - props.size()))
+
+
+## Rebuild the selected prop's node in place (after a tint or parameter change), so
+## the node order keeps matching decor.props.
+func _rebuild_selected() -> void:
+	var nodes := _prop_nodes()
+	if sel < 0 or sel >= nodes.size() or sel >= _props().size():
+		return
+	var old: Node3D = nodes[sel]
+	var e: Dictionary = _props()[sel]
+	var fresh := TrackProps.make(e)
+	fresh.position = old.position
+	fresh.rotation.y = old.rotation.y
+	fresh.scale = old.scale
+	var parent := old.get_parent()
+	parent.remove_child(old)
+	old.queue_free()
+	parent.add_child(fresh)
+	parent.move_child(fresh, sel)
+	_update_gizmo()
+
+
+## Set one parameter of the selected gameplay object.
+func set_object_param(key: String, value: Variant) -> void:
+	if sel < 0 or sel >= _props().size():
+		return
+	var e: Dictionary = _props()[sel]
+	if not TrackProps.is_object(String(e.get("type", ""))):
+		return
+	if not (e.get("params") is Dictionary):
+		e["params"] = {}
+	if e.params.get(key) == value:
+		return
+	e.params[key] = value
+	_rebuild_selected()
+	_commit("param")
+	_set_dirty(true)
+
+
+func _refresh_object_panel() -> void:
+	if obj_box == null:
+		return
+	for c in obj_box.get_children():
+		obj_box.remove_child(c)
+		c.queue_free()
+	if sel < 0 or sel >= _props().size():
+		return
+	var e: Dictionary = _props()[sel]
+	var type := String(e.get("type", ""))
+	if not TrackProps.is_object(type):
+		return
+	_lbl(obj_box, "%s settings" % ObjectTypes.label(type))
+	_muted(obj_box, ObjectTypes.behaviour_label(String(ObjectTypes.def(type).get("behaviour", ""))))
+	SchemaForm.build(obj_box, ObjectTypes.schema(type), ObjectTypes.params_for(e), set_object_param, false)
 
 
 func add_prop_at(at: Vector3) -> void:
@@ -843,7 +1016,7 @@ func add_at_view() -> void:
 		return
 	var hit := _pick_triangle(Vector2(viewport.size) * 0.5)
 	add_prop_at(hit.pos if not hit.is_empty() else focus)
-	status("Added a %s at the view centre." % TrackProps.LABEL.get(palette, palette))
+	status("Added a %s at the view centre." % TrackProps.label(palette))
 
 
 func duplicate_selected() -> void:
@@ -852,6 +1025,8 @@ func duplicate_selected() -> void:
 	var e: Dictionary = (_props()[sel] as Dictionary).duplicate(true)
 	var p: Array = e.get("pos", [0, 0, 0])
 	e["pos"] = [_r(float(p[0]) + 2.5), float(p[1]), _r(float(p[2]) + 2.5)]
+	if e.get("params") is Dictionary and (e.params as Dictionary).has("uid"):
+		e.params["uid"] = ObjectTypes.new_uid()     # a copied collectable is a new one
 	_props().append(e)
 	if track != null and track.props_root != null:
 		track.props_root.add_child(TrackProps.make(e))
@@ -919,7 +1094,7 @@ func _refresh_selection_ui() -> void:
 	else:
 		var e: Dictionary = _props()[sel]
 		sel_label.text = "%s  (prop %d of %d)" % [
-			TrackProps.LABEL.get(String(e.get("type", "")), "Prop"), sel + 1, _props().size()]
+			TrackProps.label(String(e.get("type", ""))), sel + 1, _props().size()]
 		for s in pos_spins:
 			s.editable = true
 		yaw_spin.editable = true
@@ -932,12 +1107,17 @@ func _refresh_selection_ui() -> void:
 		tint_pick.color = Color(String(e.get("tint", "#ffffff")))
 	_syncing = false
 	_update_prop_label()
+	_refresh_object_panel()
 
 
 func _update_prop_label() -> void:
 	if props_label != null:
-		props_label.text = "%d props  -  %d erased tris  -  %d patches" % [_props().size(),
-			_hidden_face_count(), _patch_count()]
+		var objs := 0
+		for e in _props():
+			if TrackProps.is_object(String(e.get("type", ""))):
+				objs += 1
+		props_label.text = "%d props  -  %d gameplay  -  %d erased tris  -  %d patches" % [_props().size() - objs,
+			objs, _hidden_face_count(), _patch_count()]
 
 
 func _patch_count() -> int:
@@ -986,20 +1166,7 @@ func _tint_changed() -> void:
 		return
 	var e: Dictionary = _props()[sel]
 	e["tint"] = tint_pick.color.to_html(false)
-	var n := _selected_node()
-	if n != null:
-		var pos := n.global_position
-		var yaw := n.rotation.y
-		var scl := n.scale.x
-		if n.get_parent() != null:
-			n.get_parent().remove_child(n)
-		n.queue_free()
-		var fresh := TrackProps.make(e)
-		fresh.position = pos
-		fresh.rotation.y = yaw
-		fresh.scale = Vector3.ONE * scl
-		track.props_root.add_child(fresh)
-	_update_gizmo()
+	_rebuild_selected()
 	_commit("tint")
 
 
@@ -1174,7 +1341,7 @@ func _on_palette_picked(i: int) -> void:
 	tint_pick.color = TrackProps.default_tint(palette)
 	_syncing = false
 	if tool == "place":
-		status("Place: click the course to stamp %s." % TrackProps.LABEL.get(palette, palette))
+		status("Place: click the course to stamp %s." % TrackProps.label(palette))
 
 
 # --- camera --------------------------------------------------------------------------
@@ -1223,7 +1390,7 @@ func _prop_height(i: int) -> float:
 	if i < 0 or i >= _props().size():
 		return 1.0
 	var e: Dictionary = _props()[i]
-	var s: Vector2 = TrackProps.SIZE.get(String(e.get("type", "tree")), Vector2(1, 2))
+	var s: Vector2 = TrackProps.size(String(e.get("type", "tree")))
 	return float(s.y) * float(e.get("scale", 1.0))
 
 
@@ -1233,7 +1400,7 @@ func _update_selection_box() -> void:
 		sel_box.visible = false
 		return
 	var e: Dictionary = _props()[sel]
-	var size: Vector2 = TrackProps.SIZE.get(String(e.get("type", "tree")), Vector2(1, 2))
+	var size: Vector2 = TrackProps.size(String(e.get("type", "tree")))
 	var s := float(e.get("scale", 1.0))
 	sel_box.visible = true
 	sel_box.global_position = n.global_position + Vector3.UP * float(size.y) * s * 0.5
@@ -1520,7 +1687,7 @@ func _pick_prop(vp: Vector2) -> int:
 		if n == null:
 			continue
 		var e: Dictionary = props[i]
-		var size: Vector2 = TrackProps.SIZE.get(String(e.get("type", "tree")), Vector2(1, 2))
+		var size: Vector2 = TrackProps.size(String(e.get("type", "tree")))
 		var s := float(e.get("scale", 1.0))
 		var center := n.global_position + Vector3.UP * float(size.y) * s * 0.5
 		var r := maxf(float(size.x) * s, float(size.y) * s * 0.5)
@@ -1869,7 +2036,7 @@ func _start_drag(p: Vector2, shift := false) -> void:
 				status("Click on the course to place a prop.")
 				return
 			add_prop_at(hit.pos)
-			status("Placed a %s - click again for more, or pick Select to edit it." % TrackProps.LABEL.get(palette, palette))
+			status("Placed a %s - click again for more, or pick Select to edit it." % TrackProps.label(palette))
 		"part":
 			_drag = 0
 			var hp := _pick_triangle(vp)
@@ -1919,7 +2086,7 @@ func _start_drag(p: Vector2, shift := false) -> void:
 			if i >= 0:
 				_select(i)
 				status("Selected %s (%d of %d). Drag the gizmo to edit it." % [
-					TrackProps.LABEL.get(String(_props()[i].get("type", "")), "prop"), i + 1, _props().size()])
+					TrackProps.label(String(_props()[i].get("type", ""))), i + 1, _props().size()])
 			else:
 				_select(-1)
 

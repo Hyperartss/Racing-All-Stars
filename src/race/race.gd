@@ -22,6 +22,8 @@ var hud: RaceHUD
 var _cam_i := 0
 var _count := 0.0
 var results: Array = []
+## Countdown time left when the player first pressed accelerate (rocket start).
+var _rocket_press := -1.0
 
 
 func _ready() -> void:
@@ -29,6 +31,16 @@ func _ready() -> void:
 	_apply_config(GameState.race_config)
 	GameState.reset()
 	GameState.total_laps = laps
+	# Console look first: course, prop and rig materials read it when they are built.
+	RetroLook.set_look(String(GameState.race_config.get("look", RetroLook.current.get("id", "classic"))))
+	RetroLook.apply(self)
+	GameRules.reload()
+	if GameState.race_config.has("items"):
+		GameRules.set_override("items_enabled", bool(GameState.race_config.items))
+	ItemTypes.reload()
+	ObjectTypes.reload()
+	PlayerProgress.load_progress()
+	PlayerProgress.clear_pending()
 	add_child(RetroEnv.new())
 	track = Track.new()
 	track.name = "Track"
@@ -98,6 +110,16 @@ func _read_args() -> void:
 func _go() -> void:
 	for r in racers:
 		r.race_active = true
+	if countdown and GameRules.b("rocket_start"):
+		var rng := RandomNumberGenerator.new()
+		rng.randomize()
+		for k in racers.size():
+			var r: Racer = racers[k]
+			if k == player_index:
+				if _rocket_press >= 0.0:
+					r.items.rocket_start(_rocket_press <= GameRules.f("rocket_window"))
+			elif rng.randf() < 0.4:
+				r.items.rocket_start(true)
 	GameState.set_state(GameState.RaceState.RACING)
 	EventBus.hud_message.emit("GO!", 1.0)
 
@@ -105,6 +127,8 @@ func _go() -> void:
 func _process(delta: float) -> void:
 	if GameState.race_state == GameState.RaceState.COUNTDOWN:
 		var before := ceili(_count)
+		if _rocket_press < 0.0 and player_index >= 0 and Input.is_action_pressed("move_forward"):
+			_rocket_press = _count
 		_count -= delta
 		if ceili(_count) != before and _count > 0.0:
 			EventBus.hud_message.emit(str(ceili(_count)), 0.9)
@@ -131,6 +155,10 @@ func _on_finished(r: Racer, t: float) -> void:
 	results.append({"name": r.display_name, "time": t})
 	if r == camera.target:
 		EventBus.hud_message.emit("FINISH!  %s" % RaceHUD._fmt(t), 4.0)
+	if player_index >= 0 and player_index < racers.size() and r == racers[player_index]:
+		var fresh := PlayerProgress.commit(map_id, t, RacerTypes.characters())
+		for cid in fresh:
+			EventBus.hud_message.emit("NEW RACER: %s!" % String(RacerTypes.character(cid).get("name", cid)).to_upper(), 4.0)
 	if results.size() == racers.size() or (player_index >= 0 and r == racers[player_index]):
 		GameState.set_state(GameState.RaceState.FINISHED)
 		if return_to_menu:

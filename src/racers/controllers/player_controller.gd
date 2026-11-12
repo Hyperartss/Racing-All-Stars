@@ -5,6 +5,7 @@ extends RacerController
 
 var _jump_was := false
 var _act_was := false
+var _item_was := false
 
 
 func get_input(_racer: Node, _delta: float) -> RacerInput:
@@ -20,4 +21,8 @@ func get_input(_racer: Node, _delta: float) -> RacerInput:
 	input.action = a
 	input.action_pressed = a and not _act_was
 	_act_was = a
+	var it := InputMap.has_action("use_item") and Input.is_action_pressed("use_item")
+	input.item = it
+	input.item_pressed = it and not _item_was
+	_item_was = it
 	return input

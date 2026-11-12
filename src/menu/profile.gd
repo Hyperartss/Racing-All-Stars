@@ -19,6 +19,8 @@ static func load_profile() -> Dictionary:
 	data["map"] = data.get("map", "retro_circuit")
 	data["laps"] = int(data.get("laps", 3))
 	data["opponents"] = int(data.get("opponents", 3))
+	data["items"] = bool(data.get("items", true))
+	data["look"] = String(data.get("look", "saturn_dreamcast"))
 	return data
 
 

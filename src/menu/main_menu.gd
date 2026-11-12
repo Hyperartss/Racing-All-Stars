@@ -27,13 +27,17 @@ var map_info: Label
 var map_image: TextureRect
 var laps_spin: SpinBox
 var opp_spin: SpinBox
+var title_info: Label
 
 
 func _ready() -> void:
 	prof = Profile.load_profile()
 	RacerTypes.reload()
-	if not RacerTypes.characters().has(prof.character):
-		prof.character = RacerTypes.characters().keys()[0]
+	PlayerProgress.load_progress()
+	RetroLook.set_look(String(prof.look))
+	RetroLook.apply(self, Vector2i(640, 360))
+	if not RacerTypes.characters().has(prof.character) or not PlayerProgress.is_unlocked(RacerTypes.character(prof.character)):
+		prof.character = _unlocked_ids()[0] if not _unlocked_ids().is_empty() else RacerTypes.characters().keys()[0]
 	if not RacerTypes.maps().has(prof.map):
 		prof.map = RacerTypes.maps().keys()[0]
 	_build_stage()
@@ -45,6 +49,10 @@ func _ready() -> void:
 	_build_maps()
 	show_screen("title")
 	_refresh_preview()
+
+
+func _unlocked_ids() -> Array:
+	return RacerTypes.characters().keys().filter(func(k): return PlayerProgress.is_unlocked(RacerTypes.character(k)))
 
 
 # --- 3D stage ----------------------------------------------------------------------
@@ -199,6 +207,7 @@ func _build_title() -> void:
 	v.add_child(gap)
 	_button(v, "RACE", func(): show_screen("characters"), 18)
 	_button(v, "QUIT", func(): get_tree().quit(), 14)
+	title_info = _label(v, "TOKENS %d    EMERALDS %d" % [PlayerProgress.count("token"), PlayerProgress.count("emerald")], 11, Color(1.0, 0.9, 0.5))
 	var gap2 := Control.new()
 	gap2.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	v.add_child(gap2)
@@ -226,6 +235,10 @@ func _build_characters() -> void:
 				b.icon = tex
 				b.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 				b.add_theme_constant_override("h_separation", 4)
+		if not PlayerProgress.is_unlocked(c):
+			b.text = "LOCKED\n%s" % PlayerProgress.describe(c.get("unlock"))
+			b.icon = null
+			b.disabled = true
 		b.pressed.connect(_pick_character.bind(cid))
 		b.focus_entered.connect(_pick_character.bind(cid))
 		grid.add_child(b)
@@ -285,6 +298,25 @@ func _rebuild_customise() -> void:
 	var c: Dictionary = RacerTypes.character(cid)
 	var custom := Profile.custom_for(cid)
 	_label(custom_box, String(c.get("name", cid)).to_upper(), 12, YELLOW)
+	var skins := RacerTypes.skins(cid)
+	if not skins.is_empty():
+		var sb := OptionButton.new()
+		sb.add_item("Default skin")
+		sb.set_item_metadata(0, "")
+		var cur := String(custom.get("skin", ""))
+		for sk in skins:
+			var sd: Dictionary = skins[sk]
+			var ok := PlayerProgress.meets(sd.get("unlock"))
+			sb.add_item(String(sd.get("name", sk)) + ("" if ok else "  (locked: %s)" % PlayerProgress.describe(sd.get("unlock"))))
+			var ix := sb.item_count - 1
+			sb.set_item_metadata(ix, sk)
+			sb.set_item_disabled(ix, not ok)
+			if sk == cur:
+				sb.select(ix)
+		sb.item_selected.connect(func(ix):
+			custom["skin"] = String(sb.get_item_metadata(ix))
+			_apply_custom())
+		custom_box.add_child(sb)
 	_zone_rows(c.get("paint", {}), custom, "paint")
 	if c.get("type", "") == "kart":
 		var kid: String = custom.get("kart", c.get("default_kart", "standard"))
@@ -391,6 +423,34 @@ func _build_maps() -> void:
 	opp_spin.value = prof.opponents
 	opp_spin.value_changed.connect(func(x): prof.opponents = int(x))
 	opts.add_child(opp_spin)
+	var row2 := HBoxContainer.new()
+	v.add_child(row2)
+	var items_cb := CheckButton.new()
+	items_cb.text = "Items"
+	items_cb.add_theme_font_size_override("font_size", 11)
+	items_cb.button_pressed = bool(prof.items)
+	items_cb.toggled.connect(func(on): prof.items = on)
+	row2.add_child(items_cb)
+	var look_pick := OptionButton.new()
+	look_pick.add_theme_font_size_override("font_size", 10)
+	look_pick.custom_minimum_size.x = 150
+	look_pick.clip_text = true
+	look_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	look_pick.tooltip_text = "Console look (content/looks): resolution, filtering and colour depth"
+	var looks := RetroLook.looks()
+	var li := 0
+	for lk in looks:
+		look_pick.add_item(String(looks[lk].get("name", lk)))
+		look_pick.set_item_metadata(li, lk)
+		if lk == String(prof.look):
+			look_pick.select(li)
+		li += 1
+	look_pick.item_selected.connect(func(ix):
+		prof.look = String(look_pick.get_item_metadata(ix))
+		RetroLook.set_look(prof.look)
+		RetroLook.apply(self, Vector2i(640, 360))
+		_refresh_preview())
+	row2.add_child(look_pick)
 	var gap := Control.new()
 	gap.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	v.add_child(gap)
@@ -418,7 +478,7 @@ func _pick_map(mid: String) -> void:
 ## Build the race config and load the race.
 func start_race() -> void:
 	var pid: String = prof.character
-	var others: Array = RacerTypes.characters().keys().filter(func(k): return k != pid)
+	var others: Array = _unlocked_ids().filter(func(k): return k != pid)
 	if others.is_empty():
 		others = [pid]
 	var opponents := []
@@ -435,6 +495,7 @@ func start_race() -> void:
 		"map": prof.map, "laps": int(prof.laps),
 		"player": {"character": pid, "custom": Profile.custom_for(pid)},
 		"opponents": opponents, "return_to_menu": true,
+		"items": bool(prof.items), "look": String(prof.look),
 	}
 	Profile.save()
 	get_tree().change_scene_to_file(RACE_SCENE)

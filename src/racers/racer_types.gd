@@ -129,10 +129,47 @@ static func apply_paint(v: RacerVisual) -> void:
 	var c: Dictionary = v.get_meta("char_def", {})
 	var custom: Dictionary = v.get_meta("custom", {})
 	var body_rig: VertexRig = v.get("rig") if "rig" in v else v.get("driver")
-	_paint_rig(body_rig, c.get("paint", {}), custom.get("paint", {}))
+	var zones: Dictionary = c.get("paint", {})
+	var chosen: Dictionary = custom.get("paint", {})
+	var skin := skin_of(c, String(custom.get("skin", "")))
+	if not skin.is_empty():
+		# A skin may also bring its own default colours (chosen paint still wins).
+		var sp: Variant = skin.get("paint", {})
+		if sp is Dictionary and not (sp as Dictionary).is_empty():
+			var merged: Dictionary = (sp as Dictionary).duplicate()
+			merged.merge(chosen, true)
+			chosen = merged
+	_paint_rig(body_rig, zones, chosen)
+	_apply_skin(body_rig, skin)
 	if v is KartVisual:
 		var kart := kart_def(String(custom.get("kart", c.get("default_kart", "standard"))))
 		_paint_rig((v as KartVisual).kart, kart.get("paint", {}), custom.get("kart_paint", {}))
+
+
+## Skins: "skins": {"super": {"name": "Super Shadow", "textures": {"shadow": "res://..png"},
+##   "paint": {"zone": "#hex"}, "unlock": {"emerald": 7}}} in the character JSON.
+## Each texture key matches surfaces whose texture path contains it ("" = all).
+static func skins(char_id: String) -> Dictionary:
+	var s: Variant = character(char_id).get("skins", {})
+	return s if s is Dictionary else {}
+
+
+static func skin_of(c: Dictionary, skin_id: String) -> Dictionary:
+	if skin_id == "":
+		return {}
+	var s: Variant = c.get("skins", {})
+	if s is Dictionary and (s as Dictionary).has(skin_id):
+		return s[skin_id]
+	return {}
+
+
+static func _apply_skin(rig: VertexRig, skin: Dictionary) -> void:
+	if rig == null or skin.is_empty():
+		return
+	var tx: Variant = skin.get("textures", {})
+	if tx is Dictionary:
+		for k in tx:
+			rig.set_surface_texture(String(k), String(tx[k]))
 
 
 static func _paint_rig(rig: VertexRig, zones: Dictionary, chosen: Dictionary) -> void:

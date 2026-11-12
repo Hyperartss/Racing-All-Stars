@@ -45,7 +45,7 @@ func surface_multiplier(surface: String) -> float:
 
 
 func physics_step(input: RacerInput, delta: float) -> void:
-	var grounded := racer.is_on_floor()
+	var grounded := racer.is_on_floor() and not launching()
 	hit_timer = maxf(0.0, hit_timer - delta)
 	dash_cool = maxf(0.0, dash_cool - delta)
 	dash_timer = maxf(0.0, dash_timer - delta)
@@ -60,7 +60,10 @@ func physics_step(input: RacerInput, delta: float) -> void:
 		EventBus.racer_action.emit(racer, &"dash", {})
 
 	surface_factor = surface_multiplier(floor_surface()) if grounded else surface_factor
-	var top: float = max_speed * surface_factor * (params.dash_boost if dash_timer > 0.0 else 1.0)
+	var extra := ext_boost(delta)
+	if extra > 0.0:
+		surface_factor = 1.0          # item / pad boosts ignore off-road
+	var top: float = max_speed * surface_factor * bonus_mult * (params.dash_boost if dash_timer > 0.0 else 1.0) + extra
 
 	# Speed
 	var control := 1.0 if grounded else float(params.air_control)
@@ -71,7 +74,7 @@ func physics_step(input: RacerInput, delta: float) -> void:
 		speed = move_toward(speed, 0.0, params.coast_decel * delta)
 	if input.brake > 0.0 and grounded:
 		speed = move_toward(speed, -6.0, params.brake * input.brake * delta)
-	if dash_timer > 0.0:
+	if dash_timer > 0.0 or extra > 0.0:
 		speed = move_toward(speed, top, 40.0 * delta)
 	if speed > top:
 		speed = move_toward(speed, top, (20.0 if grounded else 4.0) * delta)
@@ -120,3 +123,4 @@ func reset_motion(new_heading: float) -> void:
 	vy = 0.0
 	jumping = false
 	dash_timer = 0.0
+	ext_boost_timer = 0.0

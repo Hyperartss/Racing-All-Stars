@@ -1,0 +1,26 @@
+{
+	"id": "green_shell",
+	"name": "Green Shell",
+	"behaviour": "shell",
+	"shape": "shell",
+	"colour": "#28b040",
+	"params": {
+		"mode": "straight"
+	},
+	"odds": [
+		30,
+		20,
+		10,
+		5,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0
+	],
+	"count": 1,
+	"enabled": true
+}

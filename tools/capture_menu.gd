@@ -18,14 +18,14 @@ func _run() -> void:
 	menu.show_screen("characters")
 	await _wait(20)
 	await _shot("characters_sonic")
-	menu._pick_character("mario")
+	menu._pick_character("shadow")
 	await _wait(30)
 	await _shot("characters_mario")
 	menu._rebuild_customise()
 	menu.show_screen("customise")
-	var cm: Dictionary = Profile.custom_for("mario")
+	var cm: Dictionary = Profile.custom_for("shadow")
 	cm["kart_paint"] = {"body": "#2050e0", "wheels": "#ffe080", "emblem": false}
-	cm["paint"] = {"outfit": "#20a040"}
+	cm["skin"] = "super"
 	menu._apply_custom()
 	await _wait(30)
 	await _shot("customise")

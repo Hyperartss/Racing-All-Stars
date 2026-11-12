@@ -1,0 +1,15 @@
+{
+	"id": "ring_door",
+	"name": "Ring door",
+	"behaviour": "door",
+	"category": "Gameplay",
+	"shape": "",
+	"colour": "#3060d0",
+	"size": [
+		3.0,
+		4.0
+	],
+	"params": {
+		"cost": 20
+	}
+}

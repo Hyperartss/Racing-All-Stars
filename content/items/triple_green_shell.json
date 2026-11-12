@@ -1,0 +1,26 @@
+{
+	"id": "triple_green_shell",
+	"name": "Triple Green Shell",
+	"behaviour": "shell",
+	"count": 3,
+	"shape": "shell",
+	"colour": "#28b040",
+	"params": {
+		"mode": "straight"
+	},
+	"odds": [
+		0,
+		10,
+		15,
+		10,
+		5,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0
+	],
+	"enabled": true
+}

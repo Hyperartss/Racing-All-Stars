@@ -19,6 +19,17 @@ func _init() -> void:
 	var data_path: String = dock.data_path
 	var decor_path := data_path.get_base_dir() + "/decor.json"
 	var had_decor := FileAccess.file_exists(decor_path)
+	# Work on a clean slate and put the map's real decor.json back afterwards, so the
+	# test never damages a map you have decorated (it used to overwrite it).
+	_saved_decor = FileAccess.get_file_as_string(decor_path) if had_decor else ""
+	_decor_path = decor_path
+	if had_decor:
+		var fresh: Dictionary = dock._empty_decor()
+		fresh["patches"] = []
+		dock.decor = fresh
+		dock.track.decor = fresh
+		dock._apply_decor()
+		dock._build_pick_grid()
 	var ok := true
 
 	print("map %s: %d surfaces, %d props, %d samples" % [dock.map_id,
@@ -34,7 +45,9 @@ func _init() -> void:
 	# 2. The first road surface (a connector strip) is a big connected piece.
 	var si := -1
 	for k in dock.track.surface_geo:
-		if String(dock.track.surface_geo[k]["class"]) == "road":
+		# A road surface small enough for Delete part (bigger ones are refused on purpose).
+		if String(dock.track.surface_geo[k]["class"]) == "road" \
+				and dock.track.surface_geo[k]["idx"].size() / 3 <= dock.MAX_PART:
 			si = k
 			break
 	ok = ok and _check(si >= 0, "found a road surface")
@@ -717,12 +730,22 @@ func _check(cond: bool, what: String) -> bool:
 	return cond
 
 
-## The test writes a real decor.json; remove it again unless the project had one.
+var _saved_decor := ""
+var _decor_path := ""
+
+
+## The test writes a real decor.json; put the map's own back (or remove the test's).
 func _cleanup(path: String, had: bool) -> void:
-	if not had and FileAccess.file_exists(path):
+	if had:
+		var f := FileAccess.open(path, FileAccess.WRITE)
+		f.store_string(_saved_decor)
+		f.close()
+	elif FileAccess.file_exists(path):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
 func _fail(msg: String) -> void:
+	if _decor_path != "":
+		_cleanup(_decor_path, _saved_decor != "")
 	print("MAP EDITOR TEST: FAIL - " + msg)
 	quit(1)

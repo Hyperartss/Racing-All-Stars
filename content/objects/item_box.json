@@ -1,0 +1,15 @@
+{
+	"id": "item_box",
+	"name": "Item box",
+	"behaviour": "item_box",
+	"category": "Gameplay",
+	"shape": "box",
+	"colour": "#7fd0ff",
+	"size": [
+		0.7,
+		1.6
+	],
+	"params": {
+		"count": 1
+	}
+}

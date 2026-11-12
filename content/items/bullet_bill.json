@@ -1,0 +1,24 @@
+{
+	"id": "bullet_bill",
+	"name": "Bullet Bill",
+	"behaviour": "autopilot",
+	"shape": "bullet",
+	"colour": "#202020",
+	"odds": [
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		5,
+		10,
+		15,
+		20,
+		30
+	],
+	"count": 1,
+	"params": {},
+	"enabled": true
+}

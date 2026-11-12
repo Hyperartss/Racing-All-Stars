@@ -13,8 +13,8 @@ func _ready() -> void:
 	e.fog_enabled = true
 	e.fog_mode = Environment.FOG_MODE_DEPTH
 	e.fog_light_color = Color(0.62, 0.78, 0.97)
-	e.fog_depth_begin = 160.0
-	e.fog_depth_end = 420.0
+	e.fog_depth_begin = 160.0 * RetroLook.fog_scale()
+	e.fog_depth_end = 420.0 * RetroLook.fog_scale()
 	e.tonemap_mode = Environment.TONE_MAPPER_LINEAR
 	we.environment = e
 	add_child(we)

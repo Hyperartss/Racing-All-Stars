@@ -1,0 +1,24 @@
+{
+	"id": "bob_omb",
+	"name": "Bob-omb",
+	"behaviour": "bomb",
+	"shape": "bomb",
+	"colour": "#202028",
+	"odds": [
+		0,
+		5,
+		10,
+		10,
+		5,
+		5,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0
+	],
+	"count": 1,
+	"params": {},
+	"enabled": true
+}

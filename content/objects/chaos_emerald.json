@@ -1,0 +1,15 @@
+{
+	"id": "chaos_emerald",
+	"name": "Chaos Emerald",
+	"behaviour": "collectable",
+	"category": "Collectables",
+	"shape": "emerald",
+	"colour": "#20e060",
+	"size": [
+		0.5,
+		1.5
+	],
+	"params": {
+		"kind": "emerald"
+	}
+}

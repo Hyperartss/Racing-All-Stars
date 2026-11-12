@@ -53,7 +53,7 @@ func surface_multiplier(surface: String) -> float:
 
 
 func physics_step(input: RacerInput, delta: float) -> void:
-	var grounded := racer.is_on_floor()
+	var grounded := racer.is_on_floor() and not launching()
 	hit_timer = maxf(0.0, hit_timer - delta)
 	boost_timer = maxf(0.0, boost_timer - delta)
 	if hit_timer > 0.0:
@@ -62,7 +62,10 @@ func physics_step(input: RacerInput, delta: float) -> void:
 		drift_time = 0.0
 
 	surface_factor = surface_multiplier(floor_surface()) if grounded else surface_factor
-	var top: float = max_speed * surface_factor + (params.boost_speed if boost_timer > 0.0 else 0.0)
+	var extra := ext_boost(delta)
+	if extra > 0.0:
+		surface_factor = 1.0          # item / pad boosts ignore off-road
+	var top: float = max_speed * surface_factor * bonus_mult + (params.boost_speed if boost_timer > 0.0 else 0.0) + extra
 
 	# --- speed ---------------------------------------------------------------
 	if grounded:
@@ -76,7 +79,7 @@ func physics_step(input: RacerInput, delta: float) -> void:
 				speed = move_toward(speed, 0.0, params.brake * input.brake * delta)
 			else:
 				speed = move_toward(speed, -params.reverse_max, params.accel * 0.6 * delta)
-		if boost_timer > 0.0:
+		if boost_timer > 0.0 or extra > 0.0:
 			speed = move_toward(speed, top, 30.0 * delta)
 		if speed > top:
 			speed = move_toward(speed, top, 14.0 * delta)
@@ -132,7 +135,7 @@ func physics_step(input: RacerInput, delta: float) -> void:
 	anim.steer = steer_smooth
 	anim.drift_dir = drift_dir
 	anim.drift_charge = clampf(drift_time / params.turbo_2, 0.0, 1.0)
-	anim.boosting = boost_timer > 0.0
+	anim.boosting = boost_timer > 0.0 or extra > 0.0
 	anim.hit = hit_timer
 	anim.vertical_speed = vy
 
@@ -164,3 +167,4 @@ func reset_motion(new_heading: float) -> void:
 	drift_dir = 0
 	drift_time = 0.0
 	boost_timer = 0.0
+	ext_boost_timer = 0.0

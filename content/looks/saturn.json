@@ -1,0 +1,11 @@
+{
+	"id": "saturn",
+	"name": "Sega Saturn",
+	"resolution": [400, 225],
+	"filter": "nearest",
+	"bits": [5, 5, 5],
+	"dither": 0.0,
+	"scanlines": 0.08,
+	"fog_scale": 0.75,
+	"saturation": 1.08
+}

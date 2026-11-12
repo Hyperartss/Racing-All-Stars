@@ -10,6 +10,8 @@ var jump := false          ## pressed this frame
 var jump_held := false
 var action := false        ## held
 var action_pressed := false
+var item := false          ## use-item button held
+var item_pressed := false  ## pressed this frame
 
 
 func clear() -> void:
@@ -20,3 +22,5 @@ func clear() -> void:
 	jump_held = false
 	action = false
 	action_pressed = false
+	item = false
+	item_pressed = false

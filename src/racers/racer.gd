@@ -16,6 +16,8 @@ var movement: MovementModel
 var controller: RacerController
 var visual: RacerVisual
 var track: Track
+## Item slot, rings and power-ups (src/items/racer_items.gd).
+var items: RacerItems
 
 # --- progress ---
 var track_index := -1
@@ -76,6 +78,9 @@ func _ready() -> void:
 	add_child(movement.make_shape())
 	add_child(visual)
 	movement.setup(self)
+	items = RacerItems.new()
+	items.name = "Items"
+	add_child(items)
 	GameState.register_racer(self)
 
 
@@ -99,6 +104,8 @@ func _physics_process(delta: float) -> void:
 	if has_finished:
 		inp.throttle = 0.4      # cruise after the line
 		inp.steer = controller.get_input(self, delta).steer if controller is AIController else 0.0
+	if items != null:
+		items.physics(inp, delta)
 	if on_rail:
 		_rail_step(inp, delta)
 	else:
@@ -296,6 +303,13 @@ func respawn() -> void:
 
 # --- Visual ------------------------------------------------------------------------
 
+var _scale_now := 1.0
+
+func _vis_scale(delta: float) -> float:
+	_scale_now = move_toward(_scale_now, items.visual_scale(), delta * 2.0)
+	return _scale_now
+
+
 func _update_visual(delta: float) -> void:
 	if on_rail:
 		visual.transform = Transform3D.IDENTITY
@@ -305,5 +319,10 @@ func _update_visual(delta: float) -> void:
 		var local_n := global_transform.basis.inverse() * n
 		var target := Basis(Quaternion(Vector3.UP, local_n.normalized()))
 		_tilt = _tilt.slerp(target, 1.0 - exp(-10.0 * delta))
-		visual.transform = Transform3D(_tilt, Vector3.ZERO)
+		var b := _tilt
+		if items != null:
+			if items.trick_spin > 0.0:
+				b = b * Basis(Vector3.UP, (1.0 - items.trick_spin) * TAU)
+			b = b.scaled(Vector3.ONE * _vis_scale(delta))
+		visual.transform = Transform3D(b, Vector3.ZERO)
 	visual.update_visual(movement.anim, delta)

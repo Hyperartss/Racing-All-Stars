@@ -1,0 +1,24 @@
+{
+	"id": "lightning",
+	"name": "Lightning",
+	"behaviour": "lightning",
+	"shape": "bolt",
+	"colour": "#ffe820",
+	"odds": [
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		5,
+		5,
+		10,
+		15
+	],
+	"count": 1,
+	"params": {},
+	"enabled": true
+}

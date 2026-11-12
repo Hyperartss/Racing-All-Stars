@@ -1,8 +1,9 @@
 @tool
 extends EditorPlugin
-## Adds six bottom-panel docks: Map Combiner, Map Editor (3D clean-up and
-## decoration of a baked map), Map Importer (an outside track model -> a playable
-## map), Character Importer, Kart Importer and Animation Editor.
+## Adds seven bottom-panel docks: Map Combiner, Map Editor (3D clean-up, decoration
+## and gameplay objects of a baked map), Map Importer (an outside track model -> a
+## playable map), Character Importer, Kart Importer, Animation Editor and Game Editor
+## (items, object types, rules, skins / unlocks, console looks).
 
 var map_dock: Control
 var editor_dock: Control
@@ -10,6 +11,7 @@ var map_import_dock: Control
 var char_dock: Control
 var kart_dock: Control
 var anim_dock: Control
+var game_dock: Control
 
 
 func _enter_tree() -> void:
@@ -31,10 +33,13 @@ func _enter_tree() -> void:
 	anim_dock = preload("res://addons/retro_tools/animation_editor_dock.gd").new()
 	anim_dock.name = "Animation Editor"
 	add_control_to_bottom_panel(anim_dock, "Animation Editor")
+	game_dock = preload("res://addons/retro_tools/game_editor_dock.gd").new()
+	game_dock.name = "Game Editor"
+	add_control_to_bottom_panel(game_dock, "Game Editor")
 
 
 func _exit_tree() -> void:
-	for d in [map_dock, editor_dock, map_import_dock, char_dock, kart_dock, anim_dock]:
+	for d in [map_dock, editor_dock, map_import_dock, char_dock, kart_dock, anim_dock, game_dock]:
 		if d:
 			remove_control_from_bottom_panel(d)
 			d.queue_free()

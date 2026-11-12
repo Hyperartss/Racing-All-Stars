@@ -51,6 +51,15 @@
 		}
 	},
 	"rig": "res://assets/rigs/shadow.json",
+	"skins": {
+		"super": {
+			"name": "Super Shadow",
+			"paint": {},
+			"textures": {
+				"shadow_0_shadow": "res://content/characters/Shadow/SuperShadow.png"
+			}
+		}
+	},
 	"stats": {
 		"accel": 4.0,
 		"handling": 4.0,

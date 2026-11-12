@@ -1,0 +1,13 @@
+{
+	"id": "dash_pad",
+	"name": "Dash panel",
+	"behaviour": "dash_pad",
+	"category": "Gameplay",
+	"shape": "dash",
+	"colour": "#ffa020",
+	"size": [
+		1.4,
+		0.3
+	],
+	"params": {}
+}

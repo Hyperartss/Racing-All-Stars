@@ -1,0 +1,27 @@
+{
+	"id": "golden_mushroom",
+	"name": "Golden Mushroom",
+	"behaviour": "boost",
+	"shape": "mushroom",
+	"colour": "#f0c020",
+	"params": {
+		"golden": true,
+		"duration": 7.5
+	},
+	"odds": [
+		0,
+		0,
+		0,
+		0,
+		0,
+		5,
+		5,
+		10,
+		10,
+		15,
+		15,
+		10
+	],
+	"count": 1,
+	"enabled": true
+}

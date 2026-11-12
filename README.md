@@ -13,6 +13,10 @@ Open the project and press Play: Sonic (you) races Mario (AI) for 3 laps.
 | Shift | dash (cooldown) | (drift, see below) |
 | Ctrl or Shift (hold while steering) | — | hop + drift, release for a mini-turbo (blue 0.75 s, orange 1.6 s) |
 | Q | look back | look back |
+| E or J | use item (hold to drag bananas behind you) | use item |
+| S + E | fire shells backwards / throw traps forwards | same |
+| Space in the air off a spring or trick ramp | trick (boost on landing) | trick |
+| W just as "1" shows | rocket start (too early = burnout) | rocket start |
 | Tab | switch camera between racers | |
 | R | respawn | |
 
@@ -160,3 +164,75 @@ Tunables (cut points, island offset, loop radius, scales) are constants at the t
     Characters without clips keep their built-in animation. The format is read by `src/rig/rig_anim.gd`: each clip has `length` (s), `loop`, `fps` and `keys`, and each key stores a full pose (`part` -> `{rot: [x,y,z] radians, off: [x,y,z]}`).
 - Demo imports: `mario_runner` (Mario OBJ, auto split, as a runner) and `sonic_kart` (Sonic DAE, node split, as a kart driver). Both finish a lap: `res://scenes/test_lap.tscn -- --roster=mario_runner,sonic_kart`.
 - `tools/bake/bake_track.py` and `assets/tracks/merged` are superseded by `trackbake.py` and `assets/maps/`.
+
+## Gameplay: items, rings, doors, collectables (Mario Kart Wii x Sonic R)
+
+Everything here is **data plus one small script per behaviour**, so new items, objects,
+looks and rules are added without touching existing code.
+
+- **Items** - `content/items/<id>.json` (20 shipped: mushroom / triple / golden, speed
+  shoes, banana / triple, fake item box, green / red shells and triples, spiny shell,
+  bob-omb, star, bullet, lightning, blooper, barrier, super ring, magnet shield). Each
+  picks a **behaviour** (`src/items/behaviours/*.gd`: boost, trap, shell, bomb,
+  invincible, autopilot, lightning, ink, shield, rings, magnet), overrides its
+  parameters, sets `count` (triple items), a built-in `shape`/`colour` or your own
+  `model`, an optional HUD `icon`, and an `odds` row of 12 weights - one per race
+  position, Mario Kart Wii style (leaders get bananas, the back of the pack gets bullets).
+  AI racers use items too (each behaviour has `ai_should_use`).
+- **Rings / coins** pay for doors and (rules) add a little top speed up to 10 rings, like
+  MK coins. Getting hit scatters some; anyone can grab them back.
+- **Ring doors** (Sonic R): a solid gate with a price; touch it with enough rings and it
+  opens (for `open_seconds`, or for the rest of the race).
+- **Collectables**: gold tokens, Chaos Emeralds, or any `kind` you type. Only the player
+  collects them and they are only kept when the race is finished (`user://progress.json`);
+  ones already collected show as ghosts. Characters and skins can be locked behind totals
+  with `"unlock": {"token": 5, "emerald": 1}`.
+- **Track objects**: item boxes (single / rows), rings (single, line, circle, arc), ring
+  doors, tokens, emeralds, dash panels, springs, trick zones - `content/objects/<id>.json`
+  pick a behaviour in `src/objects/behaviours/` and its defaults. They live in the map's
+  `decor.json` "props" list with a `params` block, so the Map Editor moves / rotates /
+  scales / duplicates / undoes them exactly like decoration.
+- **Rules** - `content/rules.json` (roulette time, box respawn, ring rules, hit times,
+  rocket start, AI items ...). Missing keys use the defaults in `src/core/game_rules.gd`.
+- **Console looks** - `content/looks/*.json`: Saturn (400x225, nearest, RGB555),
+  Dreamcast (854x480, bilinear, dithered RGB565), Saturn x Dreamcast (640x360, dithered
+  RGB565) and the original Classic. Pick one on the course screen of the menu. A look sets
+  the internal resolution, texture filtering, colour depth, dither, scanlines, fog and
+  saturation; the HUD scales with it. The editor tools always show Classic.
+- **Skins** - `"skins"` in a character JSON swap textures on the character's own model
+  (same UVs): geometry is never cut or rebuilt, so feet and every other part stay exactly
+  as imported. Shadow ships with **Super Shadow**. Picked on the Customise screen.
+
+### Editing it in the editor
+- **Map Editor -> palette**: the Gameplay / Collectables entries place objects (turned to
+  face the road at the click). Select one and its **settings** (door price and size, ring
+  layout and count, box count, pad strength, collectable kind ...) appear under
+  *Selected prop*, generated from the behaviour's `PARAMS`. **Auto item boxes** /
+  **Auto rings** fill the whole lap every N metres; **Remove gameplay** clears them and
+  keeps the decoration. Collectables get a unique id (also when duplicated). `R` next to
+  the palette re-reads new object types.
+- **Game Editor** dock (new): *Items* (behaviour, every parameter, count, look / model,
+  icon, the 12-position odds table with presets and the resulting chance), *Objects*
+  (types and their defaults), *Rules*, *Characters* (skins: a texture field per rig
+  surface; unlock conditions for characters and skins) and *Looks*. New / Duplicate /
+  Delete / Save (Ctrl+S) on every page.
+- **New behaviours** are one script each: `extends ItemBehaviour` (in
+  `src/items/behaviours/` or `content/item_behaviours/`) or `extends TrackObject` (in
+  `src/objects/behaviours/` or `content/object_behaviours/`) with `const BEHAVIOUR`,
+  `const LABEL` and `const PARAMS`. They show up in the Game Editor and Map Editor with
+  their own fields straight away.
+- Your own models: any item / object can name a `.glb/.gltf/.tscn/.obj/.dae` in `model`
+  (textures get the current look's filtering). Characters and karts still come in through
+  the Character / Kart Importers, unchanged.
+
+### Tests for this
+- `godot --headless --fixed-fps 60 --path . res://scenes/test_gameplay.tscn` - item odds
+  by position, progress / unlocks, looks, skins (geometry untouched), then a 6-racer AI
+  race with item boxes, ring lines, dash panels, a spring and a ring door placed on the
+  course: every racer finishes 2 laps; items used and hit, rings collected, door bought.
+- `godot --headless --path . -s tools/test_editors.gd` - Game Editor (new / edit / save /
+  delete an item, skins and unlocks) and Map Editor gameplay objects (place, face the road,
+  edit params, uids, auto-place, undo, save, load in a plain Track). Restores every file.
+- `res://scenes/capture_gameplay.tscn -- --look=saturn --out=/tmp/shots` renders frames.
+- `tools/test_map_editor.gd` now works on a copy of the map's decoration and puts the
+  real `decor.json` back afterwards (it used to overwrite a decorated map).

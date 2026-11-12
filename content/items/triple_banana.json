@@ -1,0 +1,24 @@
+{
+	"id": "triple_banana",
+	"name": "Triple Banana",
+	"behaviour": "trap",
+	"count": 3,
+	"shape": "banana",
+	"colour": "#f2d22a",
+	"odds": [
+		5,
+		10,
+		5,
+		5,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0
+	],
+	"params": {},
+	"enabled": true
+}

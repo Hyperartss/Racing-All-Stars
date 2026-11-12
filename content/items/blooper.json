@@ -1,0 +1,24 @@
+{
+	"id": "blooper",
+	"name": "Blooper",
+	"behaviour": "ink",
+	"shape": "ink",
+	"colour": "#f0f0f8",
+	"odds": [
+		0,
+		5,
+		5,
+		5,
+		5,
+		5,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0
+	],
+	"count": 1,
+	"params": {},
+	"enabled": true
+}

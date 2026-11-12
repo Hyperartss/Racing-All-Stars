@@ -1,0 +1,17 @@
+{
+	"id": "ring_circle",
+	"name": "Ring circle",
+	"behaviour": "ring",
+	"category": "Gameplay",
+	"shape": "ring",
+	"colour": "#ffd23a",
+	"size": [
+		3.0,
+		1.2
+	],
+	"params": {
+		"layout": "circle",
+		"count": 8,
+		"radius": 3.0
+	}
+}

@@ -1,0 +1,11 @@
+{
+	"id": "dreamcast",
+	"name": "Sega Dreamcast",
+	"resolution": [854, 480],
+	"filter": "linear",
+	"bits": [5, 6, 5],
+	"dither": 0.9,
+	"scanlines": 0.0,
+	"fog_scale": 1.35,
+	"saturation": 1.12
+}

@@ -102,7 +102,7 @@ func load_rig(path: String) -> void:
 
 func _make_material(tex_path: String, alpha: String, _cull: bool) -> ShaderMaterial:
 	var m := ShaderMaterial.new()
-	m.shader = PAINT_SHADER
+	m.shader = RetroLook.rig_shader()
 	if ResourceLoader.exists(tex_path):
 		m.set_shader_parameter("tex", load(tex_path))
 	m.set_shader_parameter("use_alpha", alpha == "scissor")
@@ -133,9 +133,34 @@ func paint_swap(surface_filter: String, src: Color, dst: Color, tol: float = 0.0
 			m.set_shader_parameter("swap_count", swaps.size())
 
 
+## Skins: swap the texture of matching surfaces ("" = every surface). Geometry is
+## never touched - a skin is only a different picture on the same model.
+func set_surface_texture(surface_filter: String, tex_path: String) -> void:
+	var tex: Texture2D = load(tex_path) if tex_path != "" and ResourceLoader.exists(tex_path) else null
+	for s in _surf:
+		if surface_filter == "" or String(s.tex).contains(surface_filter):
+			var orig: String = s.get("tex_orig", s.tex)
+			s["tex_orig"] = orig
+			if tex == null:
+				if ResourceLoader.exists(orig):
+					(s.mat as ShaderMaterial).set_shader_parameter("tex", load(orig))
+			else:
+				(s.mat as ShaderMaterial).set_shader_parameter("tex", tex)
+
+
+## Surface texture paths (for the skin editor).
+func surface_textures() -> PackedStringArray:
+	var out := PackedStringArray()
+	for s in _surf:
+		out.append(String(s.get("tex_orig", s.tex)))
+	return out
+
+
 ## Remove all colour swaps (back to the original texture colours).
 func paint_reset() -> void:
 	for s in _surf:
+		if s.has("tex_orig") and ResourceLoader.exists(String(s.tex_orig)):
+			(s.mat as ShaderMaterial).set_shader_parameter("tex", load(String(s.tex_orig)))
 		s.swaps = []
 		(s.mat as ShaderMaterial).set_shader_parameter("swap_count", 0)
 		(s.mat as ShaderMaterial).set_shader_parameter("tint", Color.WHITE)

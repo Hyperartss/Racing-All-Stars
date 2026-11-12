@@ -1,0 +1,16 @@
+{
+	"id": "item_box_row",
+	"name": "Item box row",
+	"behaviour": "item_box",
+	"category": "Gameplay",
+	"shape": "box",
+	"colour": "#7fd0ff",
+	"size": [
+		4.0,
+		1.6
+	],
+	"params": {
+		"count": 4,
+		"spacing": 2.6
+	}
+}

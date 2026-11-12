@@ -1,0 +1,17 @@
+{
+	"id": "ring_line",
+	"name": "Ring line",
+	"behaviour": "ring",
+	"category": "Gameplay",
+	"shape": "ring",
+	"colour": "#ffd23a",
+	"size": [
+		1.0,
+		1.2
+	],
+	"params": {
+		"layout": "line",
+		"count": 5,
+		"spacing": 2.5
+	}
+}

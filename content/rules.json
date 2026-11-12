@@ -1,0 +1,18 @@
+{
+	"items_enabled": true,
+	"item_roulette_time": 2.2,
+	"item_box_respawn": 2.5,
+	"start_rings": 0,
+	"max_rings": 999,
+	"ring_speed_per_ring": 0.004,
+	"ring_speed_max_rings": 10,
+	"rings_lost_on_hit": 5,
+	"ring_respawn": 12.0,
+	"rocket_start": true,
+	"rocket_window": 0.45,
+	"rocket_boost": 1.1,
+	"spin_time": 1.0,
+	"tumble_time": 1.6,
+	"trick_boost": 0.6,
+	"ai_items": true
+}

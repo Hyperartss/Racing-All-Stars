@@ -1,0 +1,15 @@
+{
+	"id": "ring",
+	"name": "Ring",
+	"behaviour": "ring",
+	"category": "Gameplay",
+	"shape": "ring",
+	"colour": "#ffd23a",
+	"size": [
+		0.5,
+		1.2
+	],
+	"params": {
+		"layout": "single"
+	}
+}

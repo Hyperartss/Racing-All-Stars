@@ -7,6 +7,11 @@ extends RefCounted
 ## One prop entry is {"type", "pos": [x, y, z], "yaw": degrees, "scale": n,
 ## "tint": "#rrggbb"}. A prop stands on its pos (y = base of the prop, so it sits on
 ## the road/scenery it was dropped on) and has no collision - it is decoration.
+##
+## Gameplay objects (rings, item boxes, ring doors, tokens, dash panels, springs ...)
+## share this list: any "type" that is in res://content/objects/ is built by
+## ObjectTypes instead, with its "params". all_types(), label(), size() and
+## default_tint() cover both, so the Map Editor treats them the same.
 
 const TYPES := ["tree", "pine", "palm", "bush", "rock", "cone", "lamp", "sign"]
 const LABEL := {
@@ -51,7 +56,7 @@ static var _mats := {}
 
 ## Flat, unfiltered, unlit-ish material - the same look as the baked course.
 static func material(c: Color) -> StandardMaterial3D:
-	var key := c.to_html(true)
+	var key := c.to_html(true) + ("L" if RetroLook.linear() else "N")
 	var m: StandardMaterial3D = _mats.get(key)
 	if m == null:
 		m = StandardMaterial3D.new()
@@ -59,14 +64,48 @@ static func material(c: Color) -> StandardMaterial3D:
 		m.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
 		m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 		m.roughness = 1.0
-		m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+		m.texture_filter = RetroLook.base_filter()
 		m.cull_mode = BaseMaterial3D.CULL_DISABLED
 		_mats[key] = m
 	return m
 
 
 static func default_tint(type: String) -> Color:
+	if not TINT.has(type) and ObjectTypes.has(type):
+		return Color(String(ObjectTypes.def(type).get("colour", "#ffffff")))
 	return Color(String(TINT.get(type, "#ffffff")))
+
+
+## Decoration types first, then every gameplay object type grouped by category.
+static func all_types() -> Array:
+	var out: Array = TYPES.duplicate()
+	var objs: Array = ObjectTypes.defs().keys()
+	objs.sort_custom(func(a, b):
+		var ca := ObjectTypes.category(a)
+		var cb := ObjectTypes.category(b)
+		return ca < cb if ca != cb else ObjectTypes.label(a) < ObjectTypes.label(b))
+	out.append_array(objs)
+	return out
+
+
+static func is_object(type: String) -> bool:
+	return not LABEL.has(type) and ObjectTypes.has(type)
+
+
+static func label(type: String) -> String:
+	if LABEL.has(type):
+		return String(LABEL[type])
+	if ObjectTypes.has(type):
+		return "%s: %s" % [ObjectTypes.category(type), ObjectTypes.label(type)]
+	return type
+
+
+static func size(type: String) -> Vector2:
+	if SIZE.has(type):
+		return SIZE[type]
+	if ObjectTypes.has(type):
+		return ObjectTypes.size(type)
+	return Vector2(1, 2)
 
 
 ## A fresh Node3D for `type`, built from flat-coloured primitives.
@@ -96,8 +135,10 @@ static func build(type: String, tint: Color) -> Node3D:
 
 
 ## The node for one decor.json entry.
-static func make(e: Dictionary) -> Node3D:
+static func make(e: Dictionary, editor_mode: bool = true) -> Node3D:
 	var type := String(e.get("type", "tree"))
+	if is_object(type):
+		return ObjectTypes.make(e, editor_mode)
 	var n := build(type, Color(String(e.get("tint", TINT.get(type, "#ffffff")))))
 	n.name = "Prop_" + type
 	n.position = vec(e.get("pos", [0.0, 0.0, 0.0]))
@@ -107,10 +148,10 @@ static func make(e: Dictionary) -> Node3D:
 
 
 ## Spawns every entry of a decor "props" list under `parent`.
-static func spawn(parent: Node3D, props: Array) -> void:
+static func spawn(parent: Node3D, props: Array, editor_mode: bool = false) -> void:
 	for e in props:
 		if e is Dictionary:
-			parent.add_child(make(e))
+			parent.add_child(make(e, editor_mode))
 
 
 static func vec(v: Variant) -> Vector3:

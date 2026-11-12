@@ -1,0 +1,17 @@
+{
+	"id": "trick_zone",
+	"name": "Trick ramp zone",
+	"behaviour": "launcher",
+	"category": "Gameplay",
+	"shape": "chevron",
+	"colour": "#40e0ff",
+	"size": [
+		1.5,
+		0.2
+	],
+	"params": {
+		"launch": 0.0,
+		"forward": 0.0,
+		"radius": 3.0
+	}
+}
